@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Badge,
@@ -6,7 +6,9 @@ import {
   Chip,
   Container,
   CssBaseline,
+  LinearProgress,
   Paper,
+  Skeleton,
   Stack,
   Tab,
   Tabs,
@@ -20,36 +22,94 @@ import OverviewView from './components/overview/OverviewView';
 import BenchmarksView from './components/views/BenchmarksView';
 import CompareRunsView from './components/views/CompareRunsView';
 import FailuresView from './components/views/FailuresView';
-import { loadDashboardData } from './data/dashboardData';
+import PluginComparisonView from './components/views/PluginComparisonView';
+import { loadDashboardDataFiles } from './data/dashboardData';
 import { selectFailures, selectOverview } from './data/selectors';
 import { useDashboardState } from './hooks/useDashboardState';
 import { createDashboardTheme } from './theme/theme';
 import { formatFullDate, shortSha } from './utils/formatters';
 
-let dashboardData = null;
-let dashboardError = null;
-try {
-  dashboardData = loadDashboardData();
-  if (!dashboardData.latestRun) throw new Error('data.js does not contain any benchmark runs');
-  if (!dashboardData.latestCompletedRun) throw new Error('data.js does not contain a completed official run');
-} catch (error) {
-  dashboardError = error;
+const dataMetadataUrl = new URL(`${import.meta.env.BASE_URL}data/metadata.json`, document.baseURI).href;
+const dataIndexUrl = new URL(`${import.meta.env.BASE_URL}data/index.json`, document.baseURI).href;
+
+function LoadingDataState() {
+  return (
+    <Box component="main" sx={{ minHeight: 'calc(100vh - 76px)' }}>
+      <Container maxWidth={false} sx={{ maxWidth: 1600, px: { xs: 2, sm: 3, xl: 4 }, pt: { xs: 2.5, md: 3.5 }, pb: 6 }}>
+        <DashboardHero />
+        <Paper
+          data-testid="dashboard-data-loading"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+          variant="outlined"
+          sx={{ overflow: 'hidden', borderRadius: 3 }}
+        >
+          <LinearProgress aria-label="Loading benchmark run data" />
+          <Box sx={{ p: { xs: 2, sm: 2.5 } }}>
+            <Typography fontWeight={700}>Loading benchmark run data…</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4 }}>
+              The dashboard shell is ready while run files are fetched and validated.
+            </Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mt: 2.25 }}>
+              <Skeleton variant="rounded" animation="wave" height={54} sx={{ flex: 1 }} />
+              <Skeleton variant="rounded" animation="wave" height={54} sx={{ flex: 1 }} />
+            </Stack>
+          </Box>
+        </Paper>
+        <Skeleton variant="rounded" animation="wave" height={52} sx={{ mt: 1.75, borderRadius: 3 }} />
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' }, gap: 1.5, mt: 1.75 }}>
+          {[0, 1, 2].map((index) => (
+            <Skeleton key={index} variant="rounded" animation="wave" height={150} sx={{ borderRadius: 3 }} />
+          ))}
+        </Box>
+      </Container>
+    </Box>
+  );
 }
 
-function EmptyDataState() {
+function EmptyDataState({ error }) {
   return (
     <Container maxWidth="md" sx={{ py: 8 }}>
       <Alert severity="error" variant="outlined">
         <Typography fontWeight={700}>Dashboard data unavailable</Typography>
-        <Typography variant="body2" sx={{ mt: 0.5 }}>{dashboardError?.message}</Typography>
-        <Typography variant="body2" sx={{ mt: 1 }}>Make sure <code>data.js</code> loads before the React application and defines <code>window.ROCJITSU_BENCHMARK_DATA</code>.</Typography>
+        <Typography variant="body2" sx={{ mt: 0.5 }}>{error?.message}</Typography>
+        <Typography variant="body2" sx={{ mt: 1 }}>Check the metadata, data index, and per-run test catalogs under <code>public/data/</code>.</Typography>
       </Alert>
     </Container>
   );
 }
 
-function Dashboard() {
-  const data = dashboardData;
+function DashboardHero({ data = null }) {
+  return (
+    <Stack direction={{ xs: 'column', md: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { xs: 'flex-start', md: 'flex-end' }, gap: 2, mb: 2.5 }}>
+      <Box>
+        <Typography component="h1" variant="h1">RocJitsu Performance Health</Typography>
+        <Typography color="text.secondary" sx={{ mt: 0.7, maxWidth: 760 }}>
+          Track benchmark performance, regressions, and run coverage across selected GFX targets.
+        </Typography>
+      </Box>
+      <Paper data-testid="latest-commit-run" variant="outlined" sx={{ minWidth: 245, py: 1.1, px: 1.5, borderRadius: 2.5, bgcolor: 'action.hover' }}>
+        <Stack direction="row" sx={{ alignItems: 'center', gap: 1 }}>
+          <AccessTimeRoundedIcon color="primary" sx={{ fontSize: 18 }} />
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Latest commit run</Typography>
+            {data ? (
+              <Stack direction="row" sx={{ gap: 0.8, alignItems: 'center' }}>
+                <Typography variant="caption" fontWeight={700}>{formatFullDate(data.latestCommitRun.timestamp)}</Typography>
+                <Chip label={shortSha(data.latestCommitRun)} size="small" sx={{ height: 20, fontFamily: 'monospace', fontSize: 10 }} />
+              </Stack>
+            ) : (
+              <Skeleton variant="text" animation="wave" width="88%" sx={{ fontSize: 16 }} />
+            )}
+          </Box>
+        </Stack>
+      </Paper>
+    </Stack>
+  );
+}
+
+function Dashboard({ data, dataWarnings = [] }) {
   const state = useDashboardState(data);
   const overview = useMemo(
     () => selectOverview(data, state.filters, state.historyRange),
@@ -82,26 +142,23 @@ function Dashboard() {
     <>
       <Box component="main" sx={{ minHeight: 'calc(100vh - 140px)' }}>
         <Container maxWidth={false} sx={{ maxWidth: 1600, px: { xs: 2, sm: 3, xl: 4 }, pt: { xs: 2.5, md: 3.5 }, pb: 6 }}>
-          <Stack direction={{ xs: 'column', md: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { xs: 'flex-start', md: 'flex-end' }, gap: 2, mb: 2.5 }}>
-            <Box>
-              <Typography component="h1" variant="h1">RocJitsu Performance Health</Typography>
-              <Typography color="text.secondary" sx={{ mt: 0.7, maxWidth: 760 }}>
-                Track benchmark performance, regressions, and run coverage across selected GFX targets.
+          <DashboardHero data={data} />
+
+          {dataWarnings.length > 0 && (
+            <Alert data-testid="invalid-run-warning" severity="warning" variant="outlined" sx={{ mb: 1.75 }}>
+              <Typography fontWeight={700}>
+                Skipped {dataWarnings.length} invalid run {dataWarnings.length === 1 ? 'file' : 'files'}
               </Typography>
-            </Box>
-            <Paper data-testid="latest-commit-run" variant="outlined" sx={{ py: 1.1, px: 1.5, borderRadius: 2.5, bgcolor: 'action.hover' }}>
-              <Stack direction="row" sx={{ alignItems: 'center', gap: 1 }}>
-                <AccessTimeRoundedIcon color="primary" sx={{ fontSize: 18 }} />
-                <Box>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Latest commit run</Typography>
-                  <Stack direction="row" sx={{ gap: 0.8, alignItems: 'center' }}>
-                    <Typography variant="caption" fontWeight={700}>{formatFullDate(data.latestCommitRun.timestamp)}</Typography>
-                    <Chip label={shortSha(data.latestCommitRun)} size="small" sx={{ height: 20, fontFamily: 'monospace', fontSize: 10 }} />
-                  </Stack>
-                </Box>
-              </Stack>
-            </Paper>
-          </Stack>
+              {dataWarnings.slice(0, 3).map((warning) => (
+                <Typography key={`${warning.runFile}:${warning.message}`} component="div" variant="caption" sx={{ mt: 0.35, overflowWrap: 'anywhere' }}>
+                  <code>{warning.runFile}</code> — {warning.message}
+                </Typography>
+              ))}
+              {dataWarnings.length > 3 && (
+                <Typography variant="caption" color="text.secondary">And {dataWarnings.length - 3} more.</Typography>
+              )}
+            </Alert>
+          )}
 
           <FiltersBar data={data} state={state} />
 
@@ -120,6 +177,7 @@ function Dashboard() {
               <Tab value="overview" label="Overview" />
               <Tab value="benchmarks" label="Benchmarks" />
               <Tab value="compare" label="Run Comparison" />
+              <Tab value="plugins" label="Plugin Comparison" />
               <Tab
                 value="failures"
                 sx={{ minWidth: 112, px: 2.75 }}
@@ -156,6 +214,7 @@ function Dashboard() {
               onCandidateChange={state.setComparisonCandidateId}
             />
           )}
+          {state.tab === 'plugins' && <PluginComparisonView data={data} filters={state.filters} />}
           {state.tab === 'failures' && <FailuresView data={data} filters={state.filters} />}
         </Container>
       </Box>
@@ -174,7 +233,28 @@ export default function App() {
   const preferredMode = window.localStorage.getItem('rocjitsu-color-mode')
     ?? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   const [mode, setMode] = useState(preferredMode);
+  const [dataState, setDataState] = useState({ data: null, manifest: null, sourceData: null, warnings: [], error: null });
   const theme = useMemo(() => createDashboardTheme(mode), [mode]);
+
+  useEffect(() => {
+    let active = true;
+    loadDashboardDataFiles({
+      metadataUrl: dataMetadataUrl,
+      indexUrl: dataIndexUrl,
+      onManifest: (manifest) => {
+        if (active) setDataState((current) => ({ ...current, manifest }));
+      },
+    })
+      .then(({ data, sourceData, warnings }) => {
+        if (active) setDataState({ data, manifest: data, sourceData, warnings, error: null });
+      })
+      .catch((error) => {
+        if (active) setDataState((current) => ({ ...current, data: null, sourceData: null, warnings: [], error }));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const toggleMode = () => {
     setMode((current) => {
@@ -187,12 +267,16 @@ export default function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      {dashboardError ? <EmptyDataState /> : (
-        <>
-          <DashboardHeader data={dashboardData} mode={mode} onToggleMode={toggleMode} />
-          <Dashboard />
-        </>
-      )}
+      <DashboardHeader
+        data={dataState.data ?? dataState.manifest}
+        downloadData={dataState.sourceData}
+        loading={!dataState.data && !dataState.error}
+        mode={mode}
+        onToggleMode={toggleMode}
+      />
+      {!dataState.data && !dataState.error && <LoadingDataState />}
+      {dataState.error && <EmptyDataState error={dataState.error} />}
+      {dataState.data && <Dashboard data={dataState.data} dataWarnings={dataState.warnings} />}
     </ThemeProvider>
   );
 }

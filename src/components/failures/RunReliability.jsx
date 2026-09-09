@@ -100,7 +100,20 @@ export default function RunReliability({ reliability }) {
       ) : (
         <Stack sx={{ mt: 0.75, gap: 1 }}>
           {reliability.issueRuns.map((row) => (
-            <Box key={row.run.runId} sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'minmax(190px, 1fr) minmax(180px, 1.5fr) auto' }, alignItems: 'center', gap: 1.25, p: 1.25, border: 1, borderColor: 'divider', borderRadius: 2 }}>
+            <Box
+              key={row.run.runId}
+              data-testid="reliability-issue-row"
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', md: 'minmax(190px, 1fr) minmax(220px, 1.5fr) 176px' },
+                alignItems: 'center',
+                gap: 1.25,
+                p: 1.25,
+                border: 1,
+                borderColor: 'divider',
+                borderRadius: 2,
+              }}
+            >
               <Box>
                 <Typography variant="body2" fontWeight={700}>{formatFullDate(row.run.timestamp)}</Typography>
                 <Typography variant="caption" color="primary.main" component="code">{shortSha(row.run)}</Typography>
@@ -110,9 +123,15 @@ export default function RunReliability({ reliability }) {
                   <Typography variant="caption" color="text.secondary">Coverage</Typography>
                   <Typography variant="caption" fontWeight={700}>{row.completed}/{row.total} · {row.completionPercent.toFixed(1)}%</Typography>
                 </Stack>
-                <LinearProgress variant="determinate" value={row.completionPercent} color={row.failed > 0 ? 'error' : 'warning'} sx={{ height: 5, borderRadius: 999 }} />
+                <LinearProgress
+                  data-testid="reliability-progress"
+                  variant="determinate"
+                  value={row.completionPercent}
+                  color={row.failed > 0 ? 'error' : 'warning'}
+                  sx={{ height: 5, borderRadius: 999 }}
+                />
               </Box>
-              <Stack direction="row" sx={{ gap: 0.6 }}>
+              <Stack direction="row" sx={{ justifyContent: { md: 'flex-end' }, flexWrap: 'wrap', gap: 0.6 }}>
                 {row.failed > 0 && <Chip size="small" color="error" variant="outlined" label={`${row.failed} failed`} />}
                 {row.timeout > 0 && <Chip size="small" color="warning" variant="outlined" label={`${row.timeout} timeout`} />}
               </Stack>

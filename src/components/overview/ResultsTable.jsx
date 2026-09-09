@@ -40,7 +40,7 @@ const resultCollator = new Intl.Collator(undefined, { numeric: true, sensitivity
 
 function resultSortValue(row, key) {
   if (key === 'benchmark') return row.name;
-  if (key === 'type') return row.dataType;
+  if (key === 'type') return row.problem?.dataType;
   if (key === 'problem') return formatProblem(row.problem);
   if (key === 'duration') return row.durationSeconds;
   if (key === 'baseline') return row.previous?.durationSeconds;
@@ -104,7 +104,7 @@ export default function ResultsTable({ results, run, baseline, repository, searc
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) return results;
-    return results.filter((row) => [row.target, row.suite, row.name, row.operation, row.dataType].some((value) => String(value).toLowerCase().includes(query)));
+    return results.filter((row) => [row.target, row.suite, row.name, row.problem?.operation, row.problem?.dataType].some((value) => String(value).toLowerCase().includes(query)));
   }, [results, search]);
   const sortedRows = useMemo(() => {
     if (!sortKey) return filteredRows;
@@ -178,7 +178,7 @@ export default function ResultsTable({ results, run, baseline, repository, searc
                 <TableCell><Typography variant="body2" fontWeight={700} color="primary.main">{row.target}</Typography></TableCell>
                 <TableCell>{row.suite}</TableCell>
                 <TableCell><Typography variant="body2" fontWeight={650}>{row.name}</Typography></TableCell>
-                <TableCell sx={hiddenBelowLaptop}>{row.dataType.toUpperCase()}</TableCell>
+                <TableCell sx={hiddenBelowLaptop}>{row.problem?.dataType?.toUpperCase() ?? '—'}</TableCell>
                 <TableCell sx={hiddenBelowLaptop}>{formatProblem(row.problem)}</TableCell>
                 <TableCell align="right" sx={{ ...rightAlignedColumn, fontVariantNumeric: 'tabular-nums', fontWeight: 650 }}>{formatDuration(row.durationSeconds)}</TableCell>
                 <TableCell align="right" sx={{ ...hiddenBelowTablet, ...rightAlignedColumn, fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>{formatDuration(row.previous?.durationSeconds)}</TableCell>

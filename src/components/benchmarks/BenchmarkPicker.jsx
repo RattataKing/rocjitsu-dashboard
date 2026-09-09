@@ -14,7 +14,7 @@ import {
 function matchesSearch(option, query) {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return true;
-  return [option.name, option.suite, option.operation, option.dataType]
+  return [option.name, option.suite, option.problem?.operation, option.problem?.dataType]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()
@@ -93,7 +93,7 @@ export function BenchmarkGridPicker({
             <Checkbox checked={state.selected} size="small" sx={{ p: 0.25 }} />
             <ListItemText
               primary={option.name}
-              secondary={`${option.operation} · ${option.dataType.toUpperCase()}`}
+              secondary={[option.problem?.operation, option.problem?.dataType?.toUpperCase()].filter(Boolean).join(' · ')}
               slotProps={{ primary: { variant: 'body2', fontWeight: 650 }, secondary: { variant: 'caption' } }}
             />
             {outsideFilter && <Chip size="small" label="Outside filter" color="warning" variant="outlined" />}
@@ -156,7 +156,7 @@ export default function BenchmarkPicker({
           <Box component="li" key={key} {...optionProps} sx={{ gap: 1, py: 0.75 }}>
             <ListItemText
               primary={option.name}
-              secondary={`${option.operation} · ${option.dataType.toUpperCase()}`}
+              secondary={[option.problem?.operation, option.problem?.dataType?.toUpperCase()].filter(Boolean).join(' · ')}
               slotProps={{ primary: { variant: 'body2', fontWeight: 650 }, secondary: { variant: 'caption' } }}
             />
             {outsideFilter && <Chip size="small" label="Outside filter" color="warning" variant="outlined" />}

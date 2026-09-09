@@ -84,6 +84,7 @@ function baselineDescription(row) {
 
 function Coverage({ row }) {
   const complete = row.total > 0 && row.completed === row.total;
+  const issueCount = row.total - row.completed;
   return (
     <Stack direction="row" sx={{ alignItems: 'center', gap: 0.75, whiteSpace: 'nowrap' }}>
       <Typography variant="body2" fontWeight={700}>{row.completed}/{row.total}</Typography>
@@ -91,7 +92,7 @@ function Coverage({ row }) {
         size="small"
         color={complete ? 'success' : 'error'}
         variant="outlined"
-        label={complete ? 'Complete' : `${row.failed + row.timeout} issue${row.failed + row.timeout === 1 ? '' : 's'}`}
+        label={complete ? 'Complete' : `${issueCount} issue${issueCount === 1 ? '' : 's'}`}
       />
     </Stack>
   );

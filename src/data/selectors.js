@@ -151,7 +151,10 @@ function benchmarkRunLabel(run, attemptLabel = '') {
 function durationForRun(run, target, suites) {
   if (!run) return null;
   const selectedTests = run.tests.filter((test) => test.target === target && suites.includes(test.suite));
-  if (!selectedTests.length || selectedTests.some((test) => test.status !== 'completed' || !Number.isFinite(test.durationSeconds))) return null;
+  if (
+    selectedTests.length === 0
+    || selectedTests.some((test) => test.status !== 'completed' || !Number.isFinite(test.durationSeconds))
+  ) return null;
   return Number(sumDurations(selectedTests).toFixed(3));
 }
 
@@ -186,7 +189,7 @@ function intradayHistorySlots(runs, anchorDay) {
   });
 }
 
-export function selectOverview(data, filters, range = '3M') {
+export function selectOverview(data, filters, range = 'ALL') {
   const completedRuns = data.runs.filter(isRunCompleted);
   const candidate = data.latestCommitRun ?? sortRunsByCommit(data.runs).at(-1) ?? data.latestRun;
   const officialRuns = completedRuns.filter((run) => sameComparisonScope(run, candidate));
@@ -195,9 +198,10 @@ export function selectOverview(data, filters, range = '3M') {
   const comparisons = compareRuns(candidate, baseline, filters);
   const latestTests = (candidate?.tests ?? []).filter((test) => testMatches(test, filters));
   const completedTests = latestTests.filter((test) => test.status === 'completed');
+  const totalTestCount = latestTests.length;
   const comparable = comparisons.filter((item) => item.comparable);
-  const candidateComplete = latestTests.length > 0
-    && completedTests.length === latestTests.length
+  const candidateComplete = totalTestCount > 0
+    && completedTests.length === totalTestCount
     && completedTests.every((test) => Number.isFinite(test.durationSeconds));
   const fullyComparable = candidateComplete
     && comparisons.length === latestTests.length
@@ -236,7 +240,7 @@ export function selectOverview(data, filters, range = '3M') {
       ? ((comparableCandidateDuration - comparableBaselineDuration) / comparableBaselineDuration) * 100
       : null,
     comparisonLabel: historyBaseline
-      ? `Latest vs first shown in ${range === 'ALL' ? 'All' : range}`
+      ? `Latest vs first shown in ${range}`
       : 'At least two completed runs are needed',
     summary: isIntraday
       ? `${representedRuns} completed run${representedRuns === 1 ? '' : 's'} shown`
@@ -267,9 +271,9 @@ export function selectOverview(data, filters, range = '3M') {
       duration: candidateComplete ? sumDurations(completedTests) : null,
       durationDelta,
       completed: completedTests.length,
-      total: latestTests.length,
+      total: totalTestCount,
       failed,
-      completeness: latestTests.length ? (completedTests.length / latestTests.length) * 100 : 0,
+      completeness: totalTestCount ? (completedTests.length / totalTestCount) * 100 : 0,
     },
   };
 }
@@ -316,13 +320,14 @@ function runSummary(run, filters) {
   const completed = tests.filter((test) => test.status === 'completed');
   const failed = tests.filter((test) => test.status === 'failed').length;
   const timeout = tests.filter((test) => test.status === 'timeout').length;
+  const total = tests.length;
   return {
-    total: tests.length,
+    total,
     completed: completed.length,
     failed,
     timeout,
-    duration: tests.length > 0 && completed.length === tests.length ? sumDurations(completed) : null,
-    completionPercent: tests.length ? (completed.length / tests.length) * 100 : null,
+    duration: total > 0 && completed.length === total ? sumDurations(completed) : null,
+    completionPercent: total ? (completed.length / total) * 100 : null,
   };
 }
 
@@ -408,18 +413,23 @@ export function selectBenchmarkSeries(data, filters, logicalTestId) {
       const total = attemptsPerCommit.get(sha);
       return benchmarkRunLabel(run, total > 1 ? `${attempt}/${total}` : '');
     }),
-    series: filters.targets.map((target, index) => ({
-      name: target,
-      color: targetColor(target, index),
-      points: runs.map((run) => {
+    series: filters.targets.map((target, index) => {
+      const records = runs.map((run) => {
         const test = run.tests.find((candidate) => candidate.target === target && candidate.logicalTestId === logicalTestId);
-        if (!test || test.status !== 'completed' || !Number.isFinite(test.durationSeconds)) return null;
-        return {
-          value: test.durationSeconds,
-          record: { run, test },
-        };
-      }),
-    })),
+        return test ? { run, test } : null;
+      });
+      return {
+        name: target,
+        color: targetColor(target, index),
+        records,
+        points: records.map((record) => (
+          record?.test.status === 'completed' && Number.isFinite(record.test.durationSeconds) ? {
+            value: record.test.durationSeconds,
+            record,
+          } : null
+        )),
+      };
+    }),
   };
 }
 

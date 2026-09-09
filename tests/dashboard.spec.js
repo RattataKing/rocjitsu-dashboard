@@ -1,4 +1,49 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { loadDashboardData, loadPublishedDashboardData } from '../src/data/dashboardData.js';
+import { provenanceDetails } from '../src/data/provenance.js';
+import { commitShaFor, isRunCompleted } from '../src/data/runOrdering.js';
+import { chartGapPresentation } from '../src/utils/chartGaps.js';
+import { selectPluginComparisonGroups } from '../src/data/pluginComparison.js';
+import {
+  selectAggregateRunSeries,
+  selectOverview,
+  selectRecentRuns,
+} from '../src/data/selectors.js';
+
+function readJson(fileUrl) {
+  return JSON.parse(readFileSync(fileUrl, 'utf8'));
+}
+
+const dataMetadataUrl = new URL('../public/data/metadata.json', import.meta.url);
+const dataIndexUrl = new URL('../public/data/index.json', import.meta.url);
+const dataMetadata = readJson(dataMetadataUrl);
+const dataIndex = readJson(dataIndexUrl);
+const publishedRunResults = dataIndex.runFiles.map((runFile) => {
+  try {
+    return { run: readJson(new URL(runFile, dataIndexUrl)), error: null };
+  } catch (error) {
+    return { run: null, error };
+  }
+});
+const publishedRuns = publishedRunResults.map((result) => result.run);
+const publishedRunErrors = publishedRunResults.map((result) => result.error);
+const publishedCatalogs = Object.fromEntries([...new Set(publishedRuns
+  .map((run) => run?.testCatalog)
+  .filter(Boolean))].map((catalogPath) => [catalogPath, readJson(new URL(catalogPath, dataIndexUrl))]));
+const benchmarkData = loadPublishedDashboardData({
+  metadata: dataMetadata,
+  index: dataIndex,
+  runs: publishedRuns,
+  runErrors: publishedRunErrors,
+  catalogs: publishedCatalogs,
+}).data;
+
+function cloneBenchmarkData() {
+  const cloned = structuredClone(benchmarkData);
+  delete cloned.pluginRuns;
+  return cloned;
+}
 
 async function clickCompletedChartPoint(chart, completedOffset = 0) {
   const position = await chart.evaluate((element, offset) => {
@@ -25,6 +70,36 @@ async function clickCompletedChartPoint(chart, completedOffset = 0) {
 
 async function clickLastCompletedChartPoint(chart) {
   await clickCompletedChartPoint(chart);
+}
+
+async function clickLastStatusChartPoint(chart) {
+  const position = await chart.evaluate((element) => {
+    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
+    let fiber = element[fiberKey];
+    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
+    const instance = fiber.stateNode.getEchartsInstance();
+    const option = instance.getOption();
+    const seriesIndex = option.series.findIndex((series) => series.name === 'Failed or timed-out test results');
+    const point = option.series[seriesIndex].data.at(-1);
+    return instance.convertToPixel({ seriesIndex }, point.value);
+  });
+  await chart.click({ position: { x: position[0], y: position[1] } });
+}
+
+async function clickAggregateIncompletePoint(chart, commitSha) {
+  const position = await chart.evaluate((element, sha) => {
+    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
+    let fiber = element[fiberKey];
+    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
+    const instance = fiber.stateNode.getEchartsInstance();
+    const option = instance.getOption();
+    const seriesIndex = option.series.findIndex((series) => series.name === 'Incomplete aggregate results');
+    const point = option.series[seriesIndex].data.find((candidate) => (
+      candidate.run?.provenance?.rocjitsuCommitSha?.startsWith(sha)
+    ));
+    return instance.convertToPixel({ seriesIndex }, point.value);
+  }, commitSha);
+  await chart.click({ position: { x: position[0], y: position[1] } });
 }
 
 async function chartScale(chart) {
@@ -100,7 +175,9 @@ test('loads the data-driven overview without browser errors', async ({ page }) =
   });
 
   await page.goto('/');
-  await expect(page.getByTestId('rocjitsu-logo')).toBeVisible();
+  await expect(page.getByTestId('rocjitsu-logo')).toHaveCount(0);
+  await expect(page.getByText('Beta', { exact: true })).toBeVisible();
+  await expect(page.getByText('Demo', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'RocJitsu Performance Health' })).toBeVisible();
   await expect(page.getByText('Performance Trend')).toBeVisible();
   await expect(page.getByText('Overview run coverage', { exact: false })).toBeVisible();
@@ -108,39 +185,224 @@ test('loads the data-driven overview without browser errors', async ({ page }) =
   await expect(page.getByText('RocJitsu Commit Activity')).toHaveCount(0);
   await expect(page.locator('canvas')).toHaveCount(1);
   await expect(page.getByText('GEMM BF16 4096³').first()).toBeVisible();
-  const officialPolicy = await page.evaluate(() => window.ROCJITSU_BENCHMARK_DATA.runs.every((run) => (
+  const officialPolicy = benchmarkData.runs.every((run) => (
     !Object.hasOwn(run, 'canonical')
     && run.branch === 'develop'
     && ['auto', 'manual'].includes(run.trigger)
-  )));
+  ));
   expect(officialPolicy).toBe(true);
-  const separatedTimestamps = await page.evaluate(() => {
-    const run = window.ROCJITSU_BENCHMARK_DATA.runs.find((candidate) => candidate.timestamp === '2026-08-31T13:10:00.000Z');
-    return { runTime: run.timestamp, commitTime: run.commitTimestamp };
-  });
+  const run = benchmarkData.runs.find((candidate) => candidate.timestamp === '2026-08-31T13:10:00.000Z');
+  const separatedTimestamps = { runTime: run.timestamp, commitTime: run.commitTimestamp };
   expect(separatedTimestamps).toEqual({
     runTime: '2026-08-31T13:10:00.000Z',
     commitTime: '2026-08-31T12:42:00.000Z',
   });
+  expect(await page.evaluate(() => Object.hasOwn(window, 'ROCJITSU_BENCHMARK_DATA'))).toBe(false);
   expect(errors).toEqual([]);
 });
 
-test('rejects data outside the official develop-run policy', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop', 'Data-policy validation is viewport independent');
-  await page.addInitScript(() => {
-    let dashboardData;
-    Object.defineProperty(window, 'ROCJITSU_BENCHMARK_DATA', {
-      configurable: true,
-      get: () => dashboardData,
-      set: (value) => {
-        value.runs[0].branch = 'feature/experiment';
-        dashboardData = value;
-      },
+test('loads merged target runs from immutable test catalogs', async () => {
+  expect(dataMetadata.schemaVersion).toBe(1);
+  expect(dataIndex.runFiles).toHaveLength(99);
+  expect(dataIndex.runFiles.every((runFile) => /^runs\/[^/]+\.json$/.test(runFile))).toBe(true);
+  expect(Object.keys(publishedCatalogs).sort()).toEqual([
+    'test-catalogs/rocjitsu-core-v1.json',
+    'test-catalogs/rocjitsu-core-v2.json',
+  ]);
+  expect(benchmarkData.runs).toHaveLength(95);
+  expect(benchmarkData.pluginRuns).toHaveLength(99);
+  expect(benchmarkData.runs.every((run) => run.plugin.id === 'vanilla')).toBe(true);
+  expect(benchmarkData.runs.every((run) => (
+    run.targets.includes('gfx1250') && run.targets.includes('gfx950')
+  ))).toBe(true);
+  const pluginGroups = selectPluginComparisonGroups(benchmarkData);
+  expect(pluginGroups.map((group) => group.comparisonId)).toEqual([
+    'benchmark-202607250530-8e0c5183',
+    'benchmark-202608311945-31369c4d',
+  ]);
+  expect(pluginGroups[0].runs.map((run) => run.plugin.id)).toEqual(['vanilla', 'asan']);
+  expect(pluginGroups[1].runs.map((run) => run.plugin.id)).toEqual(['vanilla', 'asan', 'tsan', 'ubsan']);
+});
+
+test('compares controlled plugins for every target without a target picker', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Plugin Comparison' }).click();
+
+  const view = page.getByTestId('plugin-comparison');
+  await expect(view.getByRole('heading', { name: 'Plugin Comparison' })).toBeVisible();
+  await expect(view.getByRole('combobox', { name: 'Baseline plugin' })).toHaveText('Vanilla');
+  await expect(page.getByLabel('Targets')).toBeVisible();
+  await expect(view.getByText('Same commit, catalog, machine, environment, and test definitions.')).toBeVisible();
+
+  const gfx1250 = view.getByTestId('plugin-target-gfx1250');
+  const gfx950 = view.getByTestId('plugin-target-gfx950');
+  await expect(gfx1250.getByRole('heading', { name: 'gfx1250' })).toBeVisible();
+  await expect(gfx950).toHaveCount(0);
+  await page.getByLabel('Targets').click();
+  await page.getByRole('option', { name: /Check all targets/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(gfx950.getByRole('heading', { name: 'gfx950' })).toBeVisible();
+  await expect(gfx1250.getByTestId('plugin-summary-gfx1250-vanilla')).toContainText('7/7');
+  await expect(gfx1250.getByTestId('plugin-summary-gfx1250-asan')).toContainText('Geometric-mean runtime overhead');
+  await expect(gfx1250.getByTestId('plugin-summary-gfx1250-tsan')).toContainText('6/7');
+  await expect(gfx1250.getByTestId('plugin-summary-gfx1250-tsan')).toContainText(/\+\d+\.\d%\*/);
+  await expect(gfx1250.getByTestId('plugin-summary-gfx1250-tsan')).toContainText('Estimated for all 7 tests from 6 passed pairs');
+  await expect(gfx1250.getByText(/geometric-mean overhead measured from passed plugin\/baseline pairs is assumed/)).toBeVisible();
+  await expect(gfx1250.getByTestId('plugin-summary-gfx1250-ubsan')).toContainText('7/7');
+  const gfx1250Chart = gfx1250.getByRole('img', { name: 'Plugin runtime overhead for gfx1250' });
+  await expect(gfx1250Chart).toBeVisible();
+  await expect(gfx950.getByRole('img', { name: 'Plugin runtime overhead for gfx950' })).toBeVisible();
+  await expect(gfx1250.getByText('Concurrent access to scheduler state')).toBeVisible();
+
+  const seriesColors = async () => gfx1250Chart.evaluate((element) => {
+    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
+    let fiber = element[fiberKey];
+    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
+    return Object.fromEntries(fiber.stateNode.getEchartsInstance().getOption().series
+      .map((series) => [series.name, series.itemStyle.color]));
+  });
+  expect(await seriesColors()).toEqual({
+    AddressSanitizer: '#D97706',
+    ThreadSanitizer: '#8B5CF6',
+    UndefinedBehaviorSanitizer: '#0891B2',
+  });
+
+  await view.getByRole('combobox', { name: 'Baseline plugin' }).click();
+  await page.getByRole('option', { name: 'AddressSanitizer' }).click();
+  await expect(view.getByRole('combobox', { name: 'Baseline plugin' })).toHaveText('AddressSanitizer');
+  expect(await seriesColors()).toEqual({
+    Vanilla: '#16A34A',
+    ThreadSanitizer: '#8B5CF6',
+    UndefinedBehaviorSanitizer: '#0891B2',
+  });
+
+  const layerNormRow = gfx1250.getByRole('row', { name: /LayerNorm BF16 8192/ });
+  await layerNormRow.getByRole('button', { name: /Open ThreadSanitizer result/ }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('ThreadSanitizer', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('LLVM 20', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('ThreadSanitizer: data race detected in scheduler state')).toBeVisible();
+  await expect(dialog.getByText('Problem Details', { exact: true })).toBeVisible();
+});
+
+test('renders the dashboard shell while run data is still loading', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'Loading behavior is viewport independent');
+  let releaseRunRequest;
+  const runRequestGate = new Promise((resolve) => {
+    releaseRunRequest = resolve;
+  });
+  await page.route('**/data/runs/**', async (route) => {
+    await runRequestGate;
+    await route.continue();
+  }, { times: 1 });
+
+  await page.goto('/');
+  try {
+    await expect(page.getByText('RocJitsu / Performance Dashboard')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'RocJitsu Performance Health' })).toBeVisible();
+    await expect(page.getByText('Beta', { exact: true })).toBeVisible();
+    const loadingState = page.getByTestId('dashboard-data-loading');
+    await expect(loadingState).toBeVisible();
+    await expect(loadingState).toHaveAttribute('aria-busy', 'true');
+    await expect(loadingState.getByRole('progressbar', { name: 'Loading benchmark run data' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download JSON' })).toBeDisabled();
+  } finally {
+    releaseRunRequest();
+  }
+
+  await expect(page.getByTestId('dashboard-data-loading')).toHaveCount(0);
+  await expect(page.getByTestId('dashboard-navigation')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download JSON' })).toBeEnabled();
+});
+
+test('renders valid history with a warning when an indexed run is invalid', async ({ page }) => {
+  const invalidRunFile = 'runs/invalid-run.json';
+  const invalidRun = structuredClone(publishedRuns[0]);
+  invalidRun.targets[1].id = 'gfx1250';
+  await page.route('**/data/index.json', async (route) => {
+    const response = await route.fetch();
+    const index = await response.json();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...index, runFiles: [index.runFiles[0], invalidRunFile] }),
     });
   });
+  await page.route('**/data/runs/invalid-run.json', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(invalidRun) });
+  });
+
   await page.goto('/');
-  await expect(page.getByText('Dashboard data unavailable')).toBeVisible();
-  await expect(page.getByText(/not a valid official develop run/)).toBeVisible();
+
+  await expect(page.getByRole('heading', { name: 'RocJitsu Performance Health' })).toBeVisible();
+  const warning = page.getByTestId('invalid-run-warning');
+  await expect(warning).toContainText('Skipped 1 invalid run file');
+  await expect(warning).toContainText(invalidRunFile);
+  await expect(warning).toContainText('does not contain exactly the targets required');
+});
+
+test('rejects data outside the official develop-run policy', async () => {
+  const invalidData = cloneBenchmarkData();
+  invalidData.runs[0].branch = 'feature/experiment';
+  expect(() => loadDashboardData(invalidData)).toThrow(/not a valid official develop run/);
+});
+
+test('accepts an empty environment array', async () => {
+  const runs = structuredClone(publishedRuns);
+  runs[0].environment = [];
+  expect(() => loadPublishedDashboardData({
+    metadata: dataMetadata,
+    index: dataIndex,
+    runs,
+    runErrors: publishedRunErrors,
+    catalogs: publishedCatalogs,
+  })).not.toThrow();
+});
+
+test('skips an invalid published run and reports its filename and reason', async () => {
+  const runFiles = dataIndex.runFiles.slice(0, 2);
+  const runs = structuredClone(publishedRuns.slice(0, 2));
+  runs[1].targets[1].id = 'gfx1250';
+
+  const result = loadPublishedDashboardData({
+    metadata: dataMetadata,
+    index: { generatedAt: dataIndex.generatedAt, runFiles },
+    runs,
+    catalogs: publishedCatalogs,
+  });
+
+  expect(result.data.runs).toHaveLength(1);
+  expect(result.data.runs[0].targets).toEqual(['gfx1250', 'gfx950']);
+  expect(result.warnings).toEqual([{
+    runFile: runFiles[1],
+    message: `Run ${runs[1].id} does not contain exactly the targets required by rocjitsu-core-v1`,
+  }]);
+});
+
+test('counts failed tests in the run denominator', async () => {
+  const summary = selectRecentRuns(
+    benchmarkData,
+    { targets: ['gfx1250'], suites: benchmarkData.suites },
+    benchmarkData.runs.length,
+  ).find((candidate) => candidate.run.runId === 'benchmark-202606020530-187a7544');
+  expect(summary).toMatchObject({ completed: 4, total: 5, failed: 1 });
+  expect(isRunCompleted(summary.run)).toBe(false);
+});
+
+test('interpolates only the dotted bridge across unavailable chart values', async () => {
+  const presentation = chartGapPresentation([{ value: 10 }, null, null, { value: 16 }]);
+  expect(presentation.estimatedValues).toEqual([10, 12, 14, 16]);
+  expect(presentation.segments).toEqual([[10, 12, 14, 16]]);
+});
+
+test('keeps an older smaller test set complete after the catalog grows', async () => {
+  const historicalRun = benchmarkData.runs.find((run) => run.runId === 'benchmark-202606010530-86b362ea');
+  const historicalTargetTests = historicalRun.tests.filter((test) => test.target === 'gfx1250');
+  const currentTargetTests = benchmarkData.latestCompletedRun.tests.filter((test) => test.target === 'gfx1250');
+  expect(historicalTargetTests).toHaveLength(5);
+  expect(currentTargetTests).toHaveLength(7);
+  expect(isRunCompleted(historicalRun)).toBe(true);
+  expect(benchmarkData.testCatalog).toHaveLength(7);
 });
 
 test('performance trend fills the row beside largest changes', async ({ page }, testInfo) => {
@@ -150,7 +412,7 @@ test('performance trend fills the row beside largest changes', async ({ page }, 
   const trend = page.getByTestId('performance-trend');
   const changes = page.getByTestId('largest-changes');
   const chartWrapper = page.getByTestId('performance-trend-chart');
-  const chart = trend.getByRole('img', { name: 'Performance trend for 3M' });
+  const chart = trend.getByRole('img', { name: 'Performance trend for ALL' });
   const boxes = await Promise.all([
     trend.boundingBox(),
     changes.boundingBox(),
@@ -175,6 +437,8 @@ test('performance trend fills the row beside largest changes', async ({ page }, 
         .filter((series) => series.type === 'line')
         .map((series) => ({
           showSymbol: series.showSymbol,
+          connectNulls: series.connectNulls,
+          smooth: series.smooth,
           latestMarkers: series.markPoint?.data?.length ?? 0,
         })),
     };
@@ -182,6 +446,8 @@ test('performance trend fills the row beside largest changes', async ({ page }, 
   expect(markers.xAxisName).toBe('Commit Date (UTC)');
   expect(markers.yAxisScale).toBe(true);
   expect(markers.series.every((series) => series.showSymbol === false)).toBe(true);
+  expect(markers.series.every((series) => series.connectNulls === true)).toBe(true);
+  expect(markers.series.every((series) => Number(series.smooth) > 0)).toBe(true);
   expect(markers.series.every((series) => series.latestMarkers === 1)).toBe(true);
 });
 
@@ -226,7 +492,7 @@ test('uses contrasting target series and engineering-tone comparison labels', as
   await page.keyboard.press('Escape');
   await page.getByRole('heading', { name: 'RocJitsu Performance Health' }).click();
 
-  const trend = page.getByRole('img', { name: 'Performance trend for 3M' });
+  const trend = page.getByRole('img', { name: 'Performance trend for ALL' });
   const targetSeriesColors = await trend.evaluate((element) => {
     const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
     let fiber = element[fiberKey];
@@ -235,7 +501,8 @@ test('uses contrasting target series and engineering-tone comparison labels', as
       .filter((series) => series.type === 'line')
       .map((series) => series.lineStyle.color.toLowerCase());
   });
-  expect(targetSeriesColors).toEqual(['#2166c1', '#c25430', '#7450b8']);
+  expect(targetSeriesColors).toEqual(['#2166c1', '#c25430']);
+  expect(new Set(targetSeriesColors).size).toBe(targetSeriesColors.length);
 
   await page.getByRole('tab', { name: 'Run Comparison' }).click();
 
@@ -329,7 +596,7 @@ test('recent run baselines respect the active global test scope', async ({ page 
   await expect(august30.getByLabel('Candidate commit 9398bd3f versus baseline commit 0db03af1')).toBeVisible();
 });
 
-test('an incomplete recent run opens Aggregate Explorer with an unavailable target marker', async ({ page }, testInfo) => {
+test('an incomplete recent run has clickable aggregate and failed-test markers', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'The aggregate result is viewport independent');
   await page.goto('/');
 
@@ -347,38 +614,66 @@ test('an incomplete recent run opens Aggregate Explorer with an unavailable targ
     const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
     let fiber = element[fiberKey];
     while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
-    const selectedSeries = fiber.stateNode.getEchartsInstance().getOption().series
-      .find((series) => series.name === 'Selected run');
-    const selectedPoints = selectedSeries.data.filter((point) => (
+    const option = fiber.stateNode.getEchartsInstance().getOption();
+    const incompleteSeries = option.series
+      .find((series) => series.name === 'Incomplete aggregate results');
+    const incompletePoint = incompleteSeries?.data.find((point) => (
       point?.run?.provenance?.rocjitsuCommitSha?.startsWith('19872076')
     ));
-    const unavailablePoint = selectedPoints.find((point) => point.unavailableTargets);
     return {
-      yAxisName: fiber.stateNode.getEchartsInstance().getOption().yAxis[0].name,
-      selectedPointCount: selectedPoints.length,
-      unavailableTargets: unavailablePoint?.unavailableTargets,
-      unavailableLabel: unavailablePoint?.label?.formatter,
+      yAxisName: option.yAxis[0].name,
+      target: incompletePoint?.target,
+      completed: incompletePoint?.completed,
+      total: incompletePoint?.total,
+      label: incompletePoint?.label?.formatter,
+      symbolSize: incompletePoint?.symbolSize,
+      borderWidth: incompletePoint?.itemStyle?.borderWidth,
+      shadowBlur: incompletePoint?.itemStyle?.shadowBlur,
     };
   });
   expect(selection.yAxisName).toBe('Seconds');
-  expect(selection.selectedPointCount).toBeGreaterThan(0);
-  expect(selection.unavailableTargets).toContain('gfx1250');
-  expect(selection.unavailableLabel).toContain('N/A');
+  expect(selection).toMatchObject({
+    target: 'gfx1250',
+    completed: 5,
+    total: 7,
+    label: '5/7',
+    symbolSize: 17,
+    borderWidth: 4,
+    shadowBlur: 13,
+  });
+
+  await clickAggregateIncompletePoint(aggregateChart, '19872076');
+  const runDetails = page.getByRole('dialog', { name: 'Run Details' });
+  await expect(runDetails).toBeVisible();
+  await expect(runDetails.getByRole('heading', { name: 'Selected Scope' })).toBeVisible();
+  await expect(runDetails.getByText('5/7 completed')).toBeVisible();
+  await expect(runDetails.getByText('Incomplete Tests')).toBeVisible();
+  await expect(runDetails.getByText('GEMM FP16 1024³')).toBeVisible();
+  await expect(runDetails.getByText('Failed', { exact: true })).toBeVisible();
+  await expect(runDetails.getByText('Simulation exited before producing a valid timing result')).toBeVisible();
+  await expect(runDetails.getByText('Softmax FP32 4096×4096')).toBeVisible();
+  await expect(runDetails.getByText('Timeout', { exact: true })).toBeVisible();
+  await expect(runDetails.getByText('Benchmark exceeded its configured timeout')).toBeVisible();
+  await runDetails.getByRole('button', { name: 'Close Run Details' }).click();
 
   await page.getByRole('button', { name: 'Single' }).click();
   const benchmarkChart = page.getByRole('img', { name: /duration history/ });
-  const unavailableSelection = await benchmarkChart.evaluate((element) => {
+  const failedSelection = await benchmarkChart.evaluate((element) => {
     const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
     let fiber = element[fiberKey];
     while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
     const series = fiber.stateNode.getEchartsInstance().getOption().series
-      .find((candidate) => candidate.name === 'Selected runs unavailable');
+      .find((candidate) => candidate.name === 'Failed or timed-out test results');
+    const point = series?.data.find((candidate) => (
+      candidate.record?.run?.provenance?.rocjitsuCommitSha?.startsWith('19872076')
+    ));
     return {
-      sha: series?.data[0]?.run?.provenance?.rocjitsuCommitSha?.slice(0, 8),
-      label: series?.data[0]?.label?.formatter,
+      sha: point?.record?.run?.provenance?.rocjitsuCommitSha?.slice(0, 8),
+      label: point?.label?.formatter,
+      status: point?.record?.test?.status,
     };
   });
-  expect(unavailableSelection).toEqual({ sha: '19872076', label: 'N/A' });
+  expect(failedSelection).toEqual({ sha: '19872076', label: 'Failed', status: 'failed' });
 });
 
 test('manual runs of older commits do not become the latest completed commit or move to the history end', async ({ page }, testInfo) => {
@@ -438,167 +733,82 @@ test('manual runs of older commits do not become the latest completed commit or 
   await expect(page.getByRole('combobox', { name: 'Baseline run' })).toHaveValue(/784750dd/);
 });
 
-test('Overview uses the newest attempt of the newest commit even when it is incomplete', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop', 'Overview candidate selection is viewport independent');
-  await page.addInitScript(() => {
-    let dashboardData;
-    Object.defineProperty(window, 'ROCJITSU_BENCHMARK_DATA', {
-      configurable: true,
-      get: () => dashboardData,
-      set: (value) => {
-        const source = value.runs.find((run) => run.provenance.rocjitsuCommitSha.startsWith('31369c4d'));
-        value.runs.push({
-          ...source,
-          runId: 'incomplete-latest-commit-attempt',
-          timestamp: '2026-09-01T04:00:00.000Z',
-          trigger: 'manual',
-          tests: source.tests.map((test, index) => index === 0 ? {
-            ...test,
-            durationSeconds: null,
-            status: 'failed',
-            exitCode: 1,
-            error: 'Synthetic incomplete latest attempt',
-          } : { ...test }),
-        });
-        dashboardData = value;
-      },
-    });
+test('Overview uses the newest attempt of the newest commit even when it is incomplete', async () => {
+  const rawData = cloneBenchmarkData();
+  const source = rawData.runs.find((run) => run.provenance.rocjitsuCommitSha.startsWith('31369c4d'));
+  rawData.runs.push({
+    ...source,
+    runId: 'incomplete-latest-commit-attempt',
+    timestamp: '2026-09-01T04:00:00.000Z',
+    trigger: 'manual',
+    tests: source.tests.map((result, index) => index === 0 ? {
+      ...result,
+      durationSeconds: null,
+      status: 'failed',
+      exitCode: 1,
+      error: 'Synthetic incomplete latest attempt',
+    } : { ...result }),
   });
-  await page.goto('/');
+  const data = loadDashboardData(rawData);
+  const overview = selectOverview(data, { targets: ['gfx1250'], suites: data.suites });
 
-  await expect(page.getByTestId('latest-commit-run')).toContainText('Sep 1, 2026, 04:00 AM UTC');
-  await expect(page.getByTestId('latest-commit-run')).toContainText('31369c4d');
-  const coverageMetric = page.getByText('Overview run coverage', { exact: true }).locator('..');
-  await expect(coverageMetric).toContainText('6 / 7');
-  const perfMetric = page.getByText('Perf change', { exact: true }).first().locator('..');
-  await expect(perfMetric).toContainText('—');
-  await expect(page.getByTestId('latest-results').getByText('Failed', { exact: true })).toBeVisible();
+  expect(data.latestCommitRun.timestamp).toBe('2026-09-01T04:00:00.000Z');
+  expect(commitShaFor(data.latestCommitRun)).toMatch(/^31369c4d/);
+  expect(overview.metrics).toMatchObject({ completed: 6, total: 7, durationDelta: null });
+  expect(overview.results.some((result) => result.status === 'failed')).toBe(true);
 });
 
-test('a newer rerun of the nearest earlier commit updates the Overview baseline', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop', 'Baseline selection is viewport independent');
-  await page.addInitScript(() => {
-    let dashboardData;
-    Object.defineProperty(window, 'ROCJITSU_BENCHMARK_DATA', {
-      configurable: true,
-      get: () => dashboardData,
-      set: (value) => {
-        const source = value.runs.find((run) => run.provenance.rocjitsuCommitSha.startsWith('9f774d29'));
-        value.runs.push({
-          ...source,
-          runId: 'newer-9f774d29-rerun',
-          timestamp: '2026-09-01T04:30:00.000Z',
-          trigger: 'manual',
-          tests: source.tests.map((test) => ({
-            ...test,
-            durationSeconds: Number.isFinite(test.durationSeconds)
-              ? Number((test.durationSeconds * 2).toFixed(3))
-              : test.durationSeconds,
-          })),
-        });
-        dashboardData = value;
-      },
-    });
+test('a newer rerun of the nearest earlier commit updates the Overview baseline', async () => {
+  const rawData = cloneBenchmarkData();
+  const source = rawData.runs.find((run) => run.provenance.rocjitsuCommitSha.startsWith('9f774d29'));
+  rawData.runs.push({
+    ...source,
+    runId: 'newer-9f774d29-rerun',
+    timestamp: '2026-09-01T04:30:00.000Z',
+    trigger: 'manual',
+    tests: source.tests.map((result) => ({
+      ...result,
+      durationSeconds: Number.isFinite(result.durationSeconds)
+        ? Number((result.durationSeconds * 2).toFixed(3))
+        : result.durationSeconds,
+    })),
   });
-  await page.goto('/');
+  const data = loadDashboardData(rawData);
+  const overview = selectOverview(data, { targets: ['gfx1250'], suites: data.suites });
+  const fp16Result = overview.results.find((result) => result.logicalTestId === 'triton-gemm-f16-1024');
 
-  await expect(page.getByTestId('latest-commit-run')).toContainText('31369c4d');
-  const fp16Row = page.getByTestId('latest-results').getByRole('row', { name: /GEMM FP16 1024/ });
-  await expect(fp16Row).toContainText('4.15s');
-  await expect(fp16Row.getByLabel('Candidate commit 31369c4d versus baseline commit 9f774d29')).toBeVisible();
+  expect(commitShaFor(overview.candidate)).toMatch(/^31369c4d/);
+  expect(overview.baseline.runId).toBe('newer-9f774d29-rerun');
+  expect(fp16Result.previous.durationSeconds).toBeCloseTo(4.15, 2);
 });
 
-test('a late old-commit run stays out of Overview and opens focused in Aggregate Explorer', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop', 'Timeline ordering is viewport independent');
-  await page.addInitScript(() => {
-    let dashboardData;
-    Object.defineProperty(window, 'ROCJITSU_BENCHMARK_DATA', {
-      configurable: true,
-      get: () => dashboardData,
-      set: (value) => {
-        const source = value.runs.find((run) => run.provenance.rocjitsuCommitSha.startsWith('31369c4d'));
-        value.runs.push({
-          ...source,
-          runId: 'late-run-for-01d0c0de',
-          timestamp: '2026-09-01T03:00:00.000Z',
-          commitTimestamp: '2026-08-29T12:00:00.000Z',
-          commitOrder: 90.5,
-          trigger: 'manual',
-          provenance: {
-            ...source.provenance,
-            rocjitsuCommitSha: '01d0c0de00000000000000000000000000000000',
-            commitMessage: 'Validate historical commit placement',
-          },
-        });
-        dashboardData = value;
-      },
-    });
+test('a late old-commit run stays out of Overview and remains addressable in Aggregate Explorer data', async () => {
+  const rawData = cloneBenchmarkData();
+  const source = rawData.runs.find((run) => run.provenance.rocjitsuCommitSha.startsWith('31369c4d'));
+  rawData.runs.push({
+    ...source,
+    runId: 'late-run-for-01d0c0de',
+    timestamp: '2026-09-01T03:00:00.000Z',
+    commitTimestamp: '2026-08-29T12:00:00.000Z',
+    trigger: 'manual',
+    provenance: {
+      ...source.provenance,
+      rocjitsuCommitSha: '01d0c0de00000000000000000000000000000000',
+      commitMessage: 'Validate historical commit placement',
+    },
   });
-  await page.goto('/');
+  const data = loadDashboardData(rawData);
+  const filters = { targets: ['gfx1250'], suites: data.suites };
+  const commitHistory = selectOverview(data, filters, '3M').history;
+  const intradayHistory = selectOverview(data, filters, '1D').history;
+  const recentRuns = selectRecentRuns(data, filters);
+  const aggregate = selectAggregateRunSeries(data, filters);
 
-  const trend = page.getByRole('img', { name: 'Performance trend for 3M' });
-  await expect(trend).toBeVisible();
-  await page.waitForTimeout(500);
-  const commitTimeline = await trend.evaluate((element) => {
-    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
-    let fiber = element[fiberKey];
-    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
-    const option = fiber.stateNode.getEchartsInstance().getOption();
-    return { axisName: option.xAxis[0].name, labels: option.xAxis[0].data };
-  });
-  expect(commitTimeline.axisName).toBe('Commit Date (UTC)');
-  expect(commitTimeline.labels.some((label) => label.includes('01d0c0de'))).toBe(false);
-
-  await page.getByRole('button', { name: 'Trailing 24 hours' }).click();
-  const intradayChart = page.getByRole('img', { name: 'Performance trend for 1D' });
-  await expect(intradayChart).toBeVisible();
-  await page.waitForTimeout(300);
-  const intradayTimeline = await intradayChart.evaluate((element) => {
-    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
-    let fiber = element[fiberKey];
-    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
-    const option = fiber.stateNode.getEchartsInstance().getOption();
-    return { axisName: option.xAxis[0].name, labels: option.xAxis[0].data };
-  });
-  expect(intradayTimeline.axisName).toBe('Execution Time (UTC)');
-  expect(intradayTimeline.labels.some((label) => label.includes('01d0c0de'))).toBe(false);
-
-  const historicalRun = page.getByTestId('recent-runs-table').locator('tbody tr').filter({ hasText: '01d0c0de' });
-  await expect(historicalRun.getByLabel('Historical rerun')).toBeVisible();
-  await historicalRun.getByRole('button', { name: 'View run 01d0c0de in Benchmark Explorer' }).click();
-  await expect(page.getByRole('tab', { name: 'Benchmarks' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('button', { name: 'Aggregate' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText('Selected 01d0c0de · Manual')).toBeVisible();
-  expect(await page.evaluate(() => window.scrollY)).toBe(0);
-
-  const aggregateChart = page.getByRole('img', { name: 'Aggregate duration history for all runs' });
-  await expect(aggregateChart).toBeVisible();
-  await page.waitForTimeout(400);
-  const aggregatePresentation = await aggregateChart.evaluate((element) => {
-    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
-    let fiber = element[fiberKey];
-    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
-    const option = fiber.stateNode.getEchartsInstance().getOption();
-    const selectedSeries = option.series.find((series) => series.name === 'Selected run');
-    const selectedIndexes = [...new Set(selectedSeries.data
-      .filter((point) => point?.run?.runId === 'late-run-for-01d0c0de')
-      .map((point) => point.value[0]))];
-    return {
-      xAxisName: option.xAxis[0].name,
-      yAxisName: option.yAxis[0].name,
-      runCount: option.xAxis[0].data.length,
-      selectedIndexes,
-      zoom: option.dataZoom.map((item) => ({ startValue: item.startValue, endValue: item.endValue })),
-    };
-  });
-  expect(aggregatePresentation.xAxisName).toBe('Commit Date (UTC)');
-  expect(aggregatePresentation.yAxisName).toBe('Seconds');
-  expect(aggregatePresentation.runCount).toBeGreaterThan(24);
-  expect(aggregatePresentation.selectedIndexes).toHaveLength(1);
-  expect(aggregatePresentation.zoom.every((item) => (
-    aggregatePresentation.selectedIndexes[0] >= item.startValue
-    && aggregatePresentation.selectedIndexes[0] <= item.endValue
-  ))).toBe(true);
+  expect(commitHistory.slots.some((slot) => slot.run?.runId === 'late-run-for-01d0c0de')).toBe(false);
+  expect(intradayHistory.slots.some((slot) => slot.run?.runId === 'late-run-for-01d0c0de')).toBe(false);
+  expect(recentRuns[0]).toMatchObject({ olderCommit: true, run: { runId: 'late-run-for-01d0c0de' } });
+  expect(aggregate.runs.some((run) => run.runId === 'late-run-for-01d0c0de')).toBe(true);
+  expect(aggregate.runs.at(-1).runId).not.toBe('late-run-for-01d0c0de');
 });
 
 test('automatic change views expose the expected baseline for fully completed commits', async ({ page }, testInfo) => {
@@ -611,8 +821,8 @@ test('automatic change views expose the expected baseline for fully completed co
   await page.getByTestId('latest-results').getByRole('row', { name: /GEMM FP16 1024/ }).click();
   let dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Result' })).toBeVisible();
-  await expect(dialog.getByRole('heading', { name: 'Configuration' })).toBeVisible();
-  await expect(dialog.getByRole('heading', { name: 'Run provenance' })).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Problem Details' })).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Run Provenance' })).toBeVisible();
   await expect(dialog.getByText('Baseline run', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Close details' }).click();
 
@@ -639,7 +849,7 @@ test('benchmark history uses the previous completed result for the same test', a
   await august28.click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('Baseline run', { exact: true })).toHaveCount(0);
-  await expect(dialog.getByText('Configuration', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Problem Details', { exact: true })).toBeVisible();
 });
 
 test('every performance-change surface identifies both compared commits', async ({ page }, testInfo) => {
@@ -649,7 +859,7 @@ test('every performance-change surface identifies both compared commits', async 
   const latestPair = 'Candidate commit 31369c4d versus baseline commit 9f774d29';
   const metric = page.getByText('Perf change', { exact: true }).first().locator('..');
   await expect(metric.getByLabel(latestPair)).toBeVisible();
-  await expect(page.getByTestId('performance-trend').getByLabel('Candidate commit 255eabe3 versus baseline commit 928a7851')).toBeVisible();
+  await expect(page.getByTestId('performance-trend').getByLabel('Candidate commit 255eabe3 versus baseline commit 68c7dece')).toBeVisible();
 
   const largestChangePairs = page.getByTestId('largest-changes').getByLabel(latestPair);
   await expect(largestChangePairs).toHaveCount(6);
@@ -675,6 +885,10 @@ test('failures shows reliability for official runs', async ({ page }) => {
   await expect(page.getByText('17/20')).toBeVisible();
   await expect(page.getByText('Runs below 100%')).toBeVisible();
   await expect(page.getByRole('img', { name: 'Run reliability coverage trend' })).toBeVisible();
+
+  const progressBars = page.getByTestId('reliability-progress');
+  const barPositions = await progressBars.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().x));
+  expect(new Set(barPositions.map((position) => Math.round(position))).size).toBe(1);
 });
 
 test('benchmark picker can locally reveal suites hidden by global filters', async ({ page }) => {
@@ -742,6 +956,10 @@ test('benchmark explorer switches among single, grid, and aggregate modes', asyn
   await page.getByRole('button', { name: 'Aggregate' }).click();
   await expect(page.getByRole('button', { name: 'Aggregate' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText('Selected-suite duration by target across all official attempts, including reruns')).toBeVisible();
+  const aggregateInstructions = page.getByText(/official attempts · Selected runs remain visible while zooming/);
+  const aggregateInstructionBox = await aggregateInstructions.boundingBox();
+  const aggregateDetailsBox = await page.getByRole('button', { name: 'Disable details on click' }).boundingBox();
+  expect(aggregateInstructionBox.y + aggregateInstructionBox.height).toBeLessThanOrEqual(aggregateDetailsBox.y);
   const aggregateChart = page.getByRole('img', { name: 'Aggregate duration history for all runs' });
   await expect(aggregateChart).toBeVisible();
   await page.waitForTimeout(350);
@@ -752,11 +970,16 @@ test('benchmark explorer switches among single, grid, and aggregate modes', asyn
     const option = fiber.stateNode.getEchartsInstance().getOption();
     return {
       runCount: option.xAxis[0].data.length,
-      lineSeries: option.series.filter((series) => series.type === 'line').map((series) => ({
+      lineSeries: option.series.filter((series) => (
+        series.type === 'line' && !series.name.includes('missed-data bridge')
+      )).map((series) => ({
         name: series.name,
         showSymbol: series.showSymbol,
         hasLatestMarker: Boolean(series.markPoint?.data?.length),
       })),
+      gapBridgeTypes: option.series
+        .filter((series) => series.name.includes('missed-data bridge'))
+        .map((series) => series.lineStyle.type),
       yAxisName: option.yAxis[0].name,
       yAxisScale: option.yAxis[0].scale,
       legendTargets: option.legend[0].data,
@@ -769,6 +992,8 @@ test('benchmark explorer switches among single, grid, and aggregate modes', asyn
   expect(aggregateOption.lineSeries.map((series) => series.name)).toEqual(['gfx1250']);
   expect(aggregateOption.lineSeries.every((series) => series.showSymbol === false)).toBe(true);
   expect(aggregateOption.lineSeries.every((series) => series.hasLatestMarker === false)).toBe(true);
+  expect(aggregateOption.gapBridgeTypes.length).toBeGreaterThan(0);
+  expect(aggregateOption.gapBridgeTypes.every((type) => type === 'dotted')).toBe(true);
   expect(aggregateOption.yAxisName).toBe('Seconds');
   expect(aggregateOption.yAxisScale).toBe(true);
   expect(aggregateOption.legendTargets).toEqual(aggregateOption.lineSeries.map((series) => series.name));
@@ -872,10 +1097,15 @@ test('benchmark explorer switches among single, grid, and aggregate modes', asyn
   await expect(page.getByRole('button', { name: 'Disable details on click' })).toHaveText('Click details · On');
   await clickLastCompletedChartPoint(aggregateChart);
   const runDialog = page.getByRole('dialog');
-  await expect(runDialog.getByText('Run details')).toBeVisible();
+  await expect(runDialog.getByText('Run Details')).toBeVisible();
   await expect(runDialog.getByText('Commit 31369c4d · Auto')).toBeVisible();
+  if (page.viewportSize().width >= 600) {
+    const commitLabel = await runDialog.getByText('RocJitsu commit', { exact: true }).boundingBox();
+    const messageLabel = await runDialog.getByText('Commit message', { exact: true }).boundingBox();
+    expect(messageLabel.x).toBeGreaterThan(commitLabel.x);
+  }
   await expectDialogTypographyContained(runDialog);
-  await page.getByRole('button', { name: 'Close run details' }).click();
+  await page.getByRole('button', { name: 'Close Run Details' }).click();
 });
 
 test('benchmark explorer scroll zoom is enabled by default and can be disabled', async ({ page }) => {
@@ -902,18 +1132,79 @@ test('benchmark explorer scroll zoom is enabled by default and can be disabled',
   await expect.poll(insideZoomDisabled).toBe(true);
 });
 
-test('historical rows and completed chart points open shared provenance details', async ({ page }) => {
+test('benchmark history bridges gaps and opens failed result details', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Benchmarks' }).click();
+
+  const chart = page.getByRole('img', { name: 'GEMM FP16 1024³ duration history' });
+  await expect(chart).toBeVisible();
+  const gapPresentation = await chart.evaluate((element) => {
+    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
+    let fiber = element[fiberKey];
+    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
+    const option = fiber.stateNode.getEchartsInstance().getOption();
+    const bridges = option.series.filter((series) => series.name.includes('missed-data bridge'));
+    const statuses = option.series.find((series) => series.name === 'Failed or timed-out test results');
+    return {
+      bridgeTypes: bridges.map((series) => series.lineStyle.type),
+      statuses: statuses.data.map((point) => point.record.test.status),
+    };
+  });
+  expect(gapPresentation.bridgeTypes.length).toBeGreaterThan(0);
+  expect(gapPresentation.bridgeTypes.every((type) => type === 'dotted')).toBe(true);
+  expect(gapPresentation.statuses).toContain('failed');
+
+  await clickLastStatusChartPoint(chart);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Failed', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Simulation exited before producing a valid timing result')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close details' }).click();
+  const failedSelection = await chart.evaluate((element) => {
+    const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber'));
+    let fiber = element[fiberKey];
+    while (fiber && typeof fiber.stateNode?.getEchartsInstance !== 'function') fiber = fiber.return;
+    const option = fiber.stateNode.getEchartsInstance().getOption();
+    const marker = option.series
+      .find((series) => series.name === 'Failed or timed-out test results')
+      ?.data.find((point) => point.selected);
+    return {
+      markerSize: marker?.symbolSize,
+      borderWidth: marker?.itemStyle?.borderWidth,
+      shadowBlur: marker?.itemStyle?.shadowBlur,
+      hasRippleEffect: option.series.some((series) => series.type === 'effectScatter'),
+    };
+  });
+  expect(failedSelection).toMatchObject({
+    borderWidth: 4,
+    shadowBlur: 13,
+    hasRippleEffect: false,
+  });
+  expect(failedSelection.markerSize).toBeGreaterThanOrEqual(14);
+  expect(failedSelection.markerSize).toBeLessThanOrEqual(17);
+});
+
+test('historical rows and completed chart points open shared provenance details', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.getByRole('tab', { name: 'Benchmarks' }).click();
 
   await page.getByTestId('historical-records').getByRole('row', { name: /31369c4d/ }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog.getByText('Run provenance')).toBeVisible();
+  await expect(dialog.getByText('Environment', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Run Provenance')).toBeVisible();
+  expect(await dialog.getByText(/^(Environment|Run Provenance)$/).allTextContents()).toEqual([
+    'Environment',
+    'Run Provenance',
+  ]);
   await expect(dialog.getByRole('link', { name: 'Commit 31369c4d' })).toBeVisible();
   await expect(dialog.getByText('Validate follow-up scheduler tuning')).toBeVisible();
   await expect(dialog.getByText('ROCm SDK', { exact: true })).toBeVisible();
   await expect(dialog.getByText('7.2.0.dev202608', { exact: true })).toBeVisible();
   await expect(dialog.getByText('PyTorch', { exact: true })).toBeVisible();
+  if (testInfo.project.name === 'desktop') {
+    const machineLabel = await dialog.getByText('Machine', { exact: true }).boundingBox();
+    const commitLabel = await dialog.getByText('RocJitsu commit', { exact: true }).boundingBox();
+    expect(commitLabel.x).toBeGreaterThan(machineLabel.x);
+  }
   await page.getByRole('button', { name: 'Close details' }).click();
 
   const chart = page.getByRole('img', { name: 'GEMM FP16 1024³ duration history' });
@@ -997,39 +1288,22 @@ test('historical rows and completed chart points open shared provenance details'
   await expect(clearRuns).toBeDisabled();
 });
 
-test('hides unavailable optional provenance fields and columns', async ({ page }) => {
-  await page.addInitScript(() => {
-    let dashboardData;
-    Object.defineProperty(window, 'ROCJITSU_BENCHMARK_DATA', {
-      configurable: true,
-      get: () => dashboardData,
-      set: (value) => {
-        value.runs.forEach((run) => {
-          delete run.provenance.commitMessage;
-          delete run.provenance.details;
-          delete run.provenance.rocmSdkVersion;
-          delete run.provenance.pythonVersion;
-          delete run.provenance.torchVersion;
-          delete run.provenance.tritonCommitSha;
-          delete run.provenance.tensileLiteCommitSha;
-        });
-        dashboardData = value;
-      },
-    });
+test('hides unavailable optional provenance fields and columns', async () => {
+  const rawData = cloneBenchmarkData();
+  rawData.runs.forEach((run) => {
+    delete run.provenance.commitMessage;
+    delete run.provenance.details;
+    delete run.provenance.rocmSdkVersion;
+    delete run.provenance.pythonVersion;
+    delete run.provenance.torchVersion;
+    delete run.provenance.tritonCommitSha;
+    delete run.provenance.tensileLiteCommitSha;
   });
-  await page.goto('/');
+  const data = loadDashboardData(rawData);
 
-  await page.getByRole('tab', { name: 'Benchmarks' }).click();
-  const history = page.getByTestId('historical-records');
-  await expect(history.getByRole('heading', { name: 'Benchmark Run History' })).toBeVisible();
-  await history.locator('tbody tr').first().click();
-
-  const dialog = page.getByRole('dialog');
-  for (const label of ['Commit message', 'ROCm SDK', 'Python', 'PyTorch', 'Triton commit', 'TensileLite commit']) {
-    await expect(dialog.getByText(label, { exact: true })).toHaveCount(0);
-  }
-  await expect(dialog.getByText('Run time', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('RocJitsu commit', { exact: true })).toBeVisible();
+  expect(data.runs.every((run) => provenanceDetails(run.provenance).length === 0)).toBe(true);
+  expect(data.runs.every((run) => !Object.hasOwn(run.provenance, 'commitMessage'))).toBe(true);
+  expect(data.runs.every((run) => Boolean(run.provenance.rocjitsuCommitSha))).toBe(true);
 });
 
 test('benchmark history keeps same-day commits as separate points', async ({ page }) => {
@@ -1067,17 +1341,28 @@ test('historical records renders one bounded page at a time', async ({ page }) =
   await expect(history.locator('tbody tr')).toHaveCount(50);
 });
 
-test('opens benchmark details and toggles theme', async ({ page }) => {
+test('opens benchmark details and toggles theme', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.getByRole('row', { name: /GEMM FP16 1024/ }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('Result', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('Configuration', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('Run provenance', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Problem Details', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Environment', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Run Provenance', { exact: true })).toBeVisible();
+  expect(await dialog.getByText(/^(Environment|Run Provenance)$/).allTextContents()).toEqual([
+    'Environment',
+    'Run Provenance',
+  ]);
   await expect(dialog.getByText('Status', { exact: true })).toBeVisible();
   await expect(dialog.getByText('Duration', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('Warmup iterations', { exact: true }).locator('..')).toContainText('5');
+  await expect(dialog.getByText('Operation', { exact: true }).locator('..')).toContainText('GEMM');
+  await expect(dialog.getByText('Data type', { exact: true }).locator('..')).toContainText('fp16');
+  if (testInfo.project.name === 'desktop') {
+    const machineLabel = await dialog.getByText('Machine', { exact: true }).boundingBox();
+    const commitLabel = await dialog.getByText('RocJitsu commit', { exact: true }).boundingBox();
+    expect(commitLabel.x).toBeGreaterThan(machineLabel.x);
+  }
   await expect(dialog.getByText('Baseline run', { exact: true })).toHaveCount(0);
   await expect(dialog.getByText('Raw problem configuration', { exact: true })).toHaveCount(0);
   await expectDialogTypographyContained(dialog);
@@ -1129,13 +1414,10 @@ test('latest results precedes recent runs and renders one bounded page', async (
   expect(resultsComeFirst).toBe(true);
 
   await expect(results.locator('tbody tr')).toHaveCount(10);
-  await expect(results.getByText('1–10 of 21 results')).toBeVisible();
+  await expect(results.getByText('1–10 of 14 results')).toBeVisible();
   await results.getByRole('button', { name: 'Go to next page' }).click();
-  await expect(results.getByText('11–20 of 21 results')).toBeVisible();
-  await expect(results.locator('tbody tr')).toHaveCount(10);
-  await results.getByRole('button', { name: 'Go to last page' }).click();
-  await expect(results.getByText('21–21 of 21 results')).toBeVisible();
-  await expect(results.locator('tbody tr')).toHaveCount(1);
+  await expect(results.getByText('11–14 of 14 results')).toBeVisible();
+  await expect(results.locator('tbody tr')).toHaveCount(4);
 });
 
 test('target and suite filters use checkbox menus with check-all controls', async ({ page }) => {
@@ -1181,11 +1463,11 @@ test('keeps timeframe controls local to the duration history', async ({ page }) 
 
   await expect(page.getByLabel('Comparison period')).toHaveCount(0);
   await expect(page.getByLabel('History range')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Trailing 90 days' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'All available history' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText(/\d+ UTC commit dates? shown/)).toBeVisible();
   await expect(page.getByTestId('performance-range-change')).toHaveAttribute('data-change-state', 'faster');
-  await expect(page.getByTestId('performance-range-change')).toContainText('5.2%');
-  await expect(page.getByText('Latest vs first shown in 3M')).toBeVisible();
+  await expect(page.getByTestId('performance-range-change')).toContainText('1.3%');
+  await expect(page.getByText('Latest vs first shown in ALL')).toBeVisible();
 
   await page.getByRole('button', { name: 'Trailing 7 days' }).click();
   await expect(page.getByText(/\d+ UTC commit dates? shown/)).toBeVisible();

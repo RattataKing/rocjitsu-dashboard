@@ -25,7 +25,7 @@ const ranges = [
   { value: '3M', label: '3M', ariaLabel: 'Trailing 90 days' },
   { value: '6M', label: '6M', ariaLabel: 'Trailing 180 days' },
   { value: 'YTD', label: 'YTD', ariaLabel: 'Year to date' },
-  { value: 'ALL', label: 'All', ariaLabel: 'All available history' },
+  { value: 'ALL', label: 'ALL', ariaLabel: 'All available history' },
 ];
 
 function visibleLabelIndexes(count, maximum = 8) {
@@ -113,7 +113,7 @@ export default function DurationHistory({ history, range, onRangeChange }) {
         showSymbol: false,
         symbol: 'circle',
         symbolSize: 6,
-        connectNulls: false,
+        connectNulls: true,
         lineStyle: chartLineStyle(series.color, 2.8),
         itemStyle: chartPointStyle(series.color, theme.palette.background.paper),
         emphasis: { focus: 'series', scale: 1.55, lineStyle: { width: 3.4 } },

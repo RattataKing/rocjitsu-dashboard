@@ -4,7 +4,7 @@ export function useDashboardState(data) {
   const defaultTarget = data.targets.includes('gfx1250') ? 'gfx1250' : data.targets[0];
   const [targets, setTargets] = useState(defaultTarget ? [defaultTarget] : []);
   const [suites, setSuites] = useState(data.suites);
-  const [historyRange, setHistoryRange] = useState('3M');
+  const [historyRange, setHistoryRange] = useState('ALL');
   const [tab, setTab] = useState('overview');
   const [search, setSearch] = useState('');
   const [comparisonBaselineId, setComparisonBaselineId] = useState(null);

@@ -50,7 +50,10 @@ export function formatProblem(problem = {}) {
   if (problem.rows != null) return `${problem.rows} × ${problem.columns}`;
   if (problem.elements != null) return `${problem.elements} elements`;
   if (problem.batchSize != null) return `batch ${problem.batchSize} · seq ${problem.sequenceLength}`;
-  return Object.values(problem).join(' × ') || '—';
+  return Object.entries(problem)
+    .filter(([key]) => !['operation', 'dataType'].includes(key))
+    .map(([, value]) => value)
+    .join(' × ') || '—';
 }
 
 export const shortSha = (run) => run?.provenance?.rocjitsuCommitSha?.slice(0, 8) ?? '—';

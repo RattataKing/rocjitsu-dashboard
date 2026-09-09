@@ -5,6 +5,7 @@ import { selectBenchmarkSeries } from '../../data/selectors';
 import { commitTimestampFor } from '../../data/runOrdering';
 import { formatDuration, formatFullDate, shortSha } from '../../utils/formatters';
 import { chartAreaGradient, chartLineStyle, chartPointStyle } from '../../utils/chartStyles';
+import { chartGapPresentation } from '../../utils/chartGaps';
 import { durationAxisBounds } from '../../utils/durationAxis';
 import { initialZoomWindow, zoomFromEvent, zoomIncludingIndexes, zoomIndexRange } from '../../utils/chartZoom';
 
@@ -49,10 +50,47 @@ export default function BenchmarkHistoryChart({
       .filter(Number.isFinite)
   ));
   const durationAxis = durationAxisBounds(chartValues);
+  const seriesPresentations = viewModel.series.map((series) => ({
+    ...series,
+    ...chartGapPresentation(series.points),
+  }));
   const minimumValue = chartValues.length ? Math.min(...chartValues) : 0;
+  const statusMarkerData = seriesPresentations.flatMap((series) => (
+    series.records.flatMap((record, index) => {
+      if (!record || record.test.status === 'completed') return [];
+      const value = series.estimatedValues[index];
+      if (!Number.isFinite(value)) return [];
+      const statusColor = record.test.status === 'failed'
+        ? theme.palette.error.main
+        : theme.palette.warning.main;
+      const selected = selectedRunIdSet.has(record.run.runId);
+      return [{
+        value: [index, value],
+        record,
+        target: series.name,
+        statusPoint: true,
+        selected,
+        symbolSize: selected ? (compact ? 14 : 17) : (compact ? 11 : 14),
+        itemStyle: {
+          ...chartPointStyle(statusColor, theme.palette.background.paper),
+          borderWidth: selected ? 4 : 2,
+          shadowBlur: selected ? 13 : 9,
+          shadowColor: statusColor,
+        },
+        label: {
+          show: true,
+          formatter: record.test.status === 'failed' ? 'Failed' : 'Timeout',
+          position: 'top',
+          color: statusColor,
+          fontSize: 10,
+          fontWeight: 700,
+        },
+      }];
+    })
+  ));
   const unavailableMarkerData = selectedIndexes.flatMap((index) => {
     const unavailableTargets = viewModel.series
-      .filter((series) => !series.points[index]?.record)
+      .filter((series) => !series.records[index])
       .map((series) => series.name);
     if (unavailableTargets.length === 0) return [];
     return [{
@@ -78,14 +116,21 @@ export default function BenchmarkHistoryChart({
       borderColor: theme.palette.divider,
       textStyle: { color: theme.palette.text.primary },
       formatter: (parameters) => {
-        const points = (Array.isArray(parameters) ? parameters : [parameters])
-          .filter((point) => point.seriesType === 'line' && point.data?.record);
-        if (points.length === 0) return 'No completed result';
+        const points = (Array.isArray(parameters) ? parameters : [parameters]).filter((point) => (
+          point.data?.record && (point.seriesType === 'line' || point.data.statusPoint)
+        ));
+        if (points.length === 0) return 'No result for this benchmark';
         const run = points[0].data.record.run;
         return [
           `<strong>Run time · ${formatFullDate(run.timestamp)}</strong>`,
           `Commit ${shortSha(run)} · ${formatFullDate(commitTimestampFor(run))}`,
-          ...points.map((point) => `${point.marker}${point.seriesName}&nbsp;&nbsp;<strong>${formatDuration(point.data.value)}</strong>`),
+          ...points.map((point) => {
+            const { test } = point.data.record;
+            const target = point.data.target ?? point.seriesName;
+            return test.status === 'completed'
+              ? `${point.marker}${target}&nbsp;&nbsp;<strong>${formatDuration(test.durationSeconds)}</strong> · Completed`
+              : `${point.marker}${target}&nbsp;&nbsp;<strong>${test.status === 'failed' ? 'Failed' : 'Timeout'}</strong>`;
+          }),
         ].join('<br/>');
       },
     },
@@ -114,7 +159,7 @@ export default function BenchmarkHistoryChart({
       splitLine: { lineStyle: { color: theme.palette.divider, type: 'dashed' } },
     },
     dataZoom: [{ type: 'inside', disabled: !scrollZoomEnabled, ...displayZoom }],
-    series: viewModel.series.map((series) => ({
+    series: seriesPresentations.map((series) => ({
         name: series.name,
         type: 'line',
         data: series.points,
@@ -127,7 +172,23 @@ export default function BenchmarkHistoryChart({
         itemStyle: chartPointStyle(series.color, theme.palette.background.paper),
         areaStyle: { color: chartAreaGradient(series.color, 0.13), opacity: 1 },
         emphasis: { focus: 'series', scale: 1.6, lineStyle: { width: 3.3 } },
-      })).concat(viewModel.series.map((series) => ({
+        z: 3,
+      })).concat(seriesPresentations.flatMap((series) => (
+      series.segments.map((segment, index) => ({
+        name: `${series.name} missed-data bridge ${index + 1}`,
+        type: 'line',
+        data: segment,
+        smooth: 0.18,
+        showSymbol: false,
+        symbol: 'none',
+        connectNulls: false,
+        silent: true,
+        tooltip: { show: false },
+        lineStyle: { ...chartLineStyle(series.color, 2.4), type: 'dotted', opacity: 0.85 },
+        emphasis: { disabled: true },
+        z: 4,
+      }))
+    ))).concat(seriesPresentations.map((series) => ({
       name: `${series.name} point details`,
       type: 'scatter',
       data: series.points,
@@ -136,7 +197,17 @@ export default function BenchmarkHistoryChart({
       emphasis: { scale: false },
       tooltip: { show: showDetailsOnClick },
       z: 10,
-    }))).concat(viewModel.series.map((series) => ({
+    }))).concat(statusMarkerData.length > 0 ? [{
+      name: 'Failed or timed-out test results',
+      type: 'scatter',
+      data: statusMarkerData,
+      symbol: 'diamond',
+      symbolSize: compact ? 11 : 14,
+      clip: false,
+      emphasis: { scale: 1.3 },
+      tooltip: { show: true },
+      z: 11,
+    }] : []).concat(seriesPresentations.map((series) => ({
       name: `${series.name} selected points`,
       type: 'scatter',
       data: series.points.map((point) => (

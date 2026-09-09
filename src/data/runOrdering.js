@@ -1,4 +1,4 @@
-const COMPARISON_SCOPE_FIELDS = ['branch', 'environmentId', 'configurationId'];
+const COMPARISON_SCOPE_FIELDS = ['branch', 'environmentId'];
 
 function parsedTime(value) {
   const time = Date.parse(value);
@@ -6,7 +6,6 @@ function parsedTime(value) {
 }
 
 export function isRunCompleted(run) {
-  if (run?.status) return ['completed', 'passed', 'success'].includes(run.status);
   return Array.isArray(run?.tests)
     && run.tests.length > 0
     && run.tests.every((test) => test.status === 'completed');
@@ -33,12 +32,6 @@ export function compareCommitPosition(left, right) {
   const leftSha = commitShaFor(left);
   const rightSha = commitShaFor(right);
   if (leftSha && leftSha === rightSha) return 0;
-
-  const sameBranch = left?.branch != null && left.branch === right?.branch;
-  if (sameBranch && Number.isFinite(left?.commitOrder) && Number.isFinite(right?.commitOrder)) {
-    const orderDifference = left.commitOrder - right.commitOrder;
-    if (orderDifference) return orderDifference;
-  }
 
   const timeDifference = parsedTime(commitTimestampFor(left)) - parsedTime(commitTimestampFor(right));
   return timeDifference || leftSha.localeCompare(rightSha);

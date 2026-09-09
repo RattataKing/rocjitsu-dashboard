@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Box, Chip, Stack, Typography, useTheme } from '@mui/material';
+import { Box, Chip, useTheme } from '@mui/material';
 import Chart from '../shared/Chart';
 import { selectAggregateRunSeries } from '../../data/selectors';
 import { commitTimestampFor } from '../../data/runOrdering';
 import { formatDuration, formatFullDate, shortSha } from '../../utils/formatters';
 import { chartAreaGradient, chartLineStyle, chartPointStyle } from '../../utils/chartStyles';
+import { chartGapPresentation } from '../../utils/chartGaps';
 import {
   initialZoomWindow,
   zoomFromEvent,
@@ -47,7 +48,45 @@ export default function AggregatePerformanceChart({
       .map((point) => point.value)
       .filter(Number.isFinite)
   ));
+  const seriesPresentations = viewModel.series.map((series) => ({
+    ...series,
+    ...chartGapPresentation(series.data),
+  }));
   const minimumValue = visibleChartValues.length ? Math.min(...visibleChartValues) : 0;
+  const incompleteMarkerData = seriesPresentations.flatMap((series) => (
+    series.data.flatMap((record, index) => {
+      if (Number.isFinite(record.value) || record.total === 0) return [];
+      const estimatedValue = series.estimatedValues[index];
+      const value = Number.isFinite(estimatedValue) ? estimatedValue : minimumValue;
+      const selectedTests = (record.run.tests ?? []).filter((test) => (
+        test.target === series.target && filters.suites.includes(test.suite)
+      ));
+      const hasFailure = selectedTests.some((test) => test.status === 'failed');
+      const statusColor = hasFailure ? theme.palette.error.main : theme.palette.warning.main;
+      const selected = selectedRunIdSet.has(record.run.runId);
+      return [{
+        ...record,
+        value: [index, value],
+        incomplete: true,
+        selected,
+        symbolSize: selected ? 17 : 14,
+        itemStyle: {
+          ...chartPointStyle(statusColor, theme.palette.background.paper),
+          borderWidth: selected ? 4 : 2,
+          shadowBlur: selected ? 13 : 9,
+          shadowColor: statusColor,
+        },
+        label: {
+          show: true,
+          formatter: `${record.completed}/${record.total}`,
+          position: 'top',
+          color: statusColor,
+          fontSize: 10,
+          fontWeight: 700,
+        },
+      }];
+    })
+  ));
   const selectedMarkerData = viewModel.series.flatMap((series) => (
     series.data.flatMap((record, index) => (
       selectedRunIdSet.has(record.run.runId) && Number.isFinite(record.value)
@@ -61,7 +100,9 @@ export default function AggregatePerformanceChart({
   ));
   selectedIndexes.forEach((index) => {
     const unavailableTargets = viewModel.series
-      .filter((series) => !Number.isFinite(series.data[index]?.value))
+      .filter((series) => (
+        !Number.isFinite(series.data[index]?.value) && series.data[index]?.total === 0
+      ))
       .map((series) => series.target);
     if (unavailableTargets.length === 0) return;
     selectedMarkerData.push({
@@ -102,9 +143,13 @@ export default function AggregatePerformanceChart({
         const selectedTests = (run.tests ?? []).filter((test) => (
           filters.targets.includes(test.target) && filters.suites.includes(test.suite)
         ));
+        const totalTestCount = selectedTests.length;
         const unavailable = allPoints.find((parameter) => (
           parameter.seriesName === 'Selected run' && parameter.data?.unavailableTargets
         ))?.data.unavailableTargets;
+        const incomplete = allPoints.find((parameter) => (
+          parameter.seriesName === 'Incomplete aggregate results' && parameter.data?.incomplete
+        ));
         return [
           `<strong>Commit ${shortSha(run)}</strong>`,
           `Commit time · ${formatFullDate(commitTimestampFor(run))}`,
@@ -113,8 +158,11 @@ export default function AggregatePerformanceChart({
           ...usable.map((targetPoint) => (
             `${targetPoint.marker}${targetPoint.seriesName}&nbsp;&nbsp;<strong>${formatDuration(targetPoint.data.value)}</strong>`
           )),
+          incomplete
+            ? `${incomplete.marker}${incomplete.data.target}&nbsp;&nbsp;<strong>${incomplete.data.completed}/${incomplete.data.total} completed</strong>`
+            : null,
           unavailable?.length ? `Unavailable targets · ${unavailable.join(', ')}` : null,
-          `Selected results · ${selectedTests.filter((test) => test.status === 'completed').length}/${selectedTests.length} completed`,
+          `Selected results · ${selectedTests.filter((test) => test.status === 'completed').length}/${totalTestCount} completed`,
         ].filter(Boolean).join('<br/>');
       },
     },
@@ -168,7 +216,7 @@ export default function AggregatePerformanceChart({
       },
     ],
     series: [
-      ...viewModel.series.map((series) => ({
+      ...seriesPresentations.map((series) => ({
         name: series.target,
         type: 'line',
         data: series.data,
@@ -184,8 +232,25 @@ export default function AggregatePerformanceChart({
           color: chartAreaGradient(series.color, viewModel.series.length === 1 ? 0.24 : 0.1),
           opacity: 1,
         },
+        z: 3,
       })),
-      ...viewModel.series.map((series) => ({
+      ...seriesPresentations.flatMap((series) => (
+        series.segments.map((segment, index) => ({
+          name: `${series.target} missed-data bridge ${index + 1}`,
+          type: 'line',
+          data: segment,
+          showSymbol: false,
+          symbol: 'none',
+          connectNulls: false,
+          smooth: 0.12,
+          silent: true,
+          tooltip: { show: false },
+          lineStyle: { ...chartLineStyle(series.color, 2.3), type: 'dotted', opacity: 0.85 },
+          emphasis: { disabled: true },
+          z: 4,
+        }))
+      )),
+      ...seriesPresentations.map((series) => ({
         name: `${series.target} point selection`,
         type: 'scatter',
         data: series.data,
@@ -195,6 +260,17 @@ export default function AggregatePerformanceChart({
         tooltip: { show: showDetailsOnClick },
         z: 10,
       })),
+      ...(incompleteMarkerData.length > 0 ? [{
+        name: 'Incomplete aggregate results',
+        type: 'scatter',
+        data: incompleteMarkerData,
+        symbol: 'diamond',
+        symbolSize: 14,
+        clip: false,
+        emphasis: { scale: 1.3 },
+        tooltip: { show: true },
+        z: 11,
+      }] : []),
       {
         name: 'Selected run',
         type: 'scatter',
@@ -229,15 +305,8 @@ export default function AggregatePerformanceChart({
 
   return (
     <Box data-testid="aggregate-performance-chart">
-      <Stack direction={{ xs: 'column', sm: 'row' }} sx={{ justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, gap: 1, mb: 1 }}>
-        <Box>
-          <Typography variant="caption" color="text.secondary">
-            {viewModel.runs.length} official attempts · Selected runs remain visible while zooming · {scrollZoomEnabled
-              ? 'Scroll, pinch, or use the slider to change the visible range'
-              : 'Use the slider to change the visible range'}
-          </Typography>
-        </Box>
-        {latestSelectedRun && (
+      {latestSelectedRun && (
+        <Box sx={{ display: 'flex', justifyContent: { xs: 'flex-start', sm: 'flex-end' }, mb: 1 }}>
           <Chip
             size="small"
             color="primary"
@@ -246,8 +315,8 @@ export default function AggregatePerformanceChart({
               ? `Selected ${shortSha(latestSelectedRun)} · ${latestSelectedRun.trigger === 'manual' ? 'Manual' : 'Auto'}`
               : `${selectedRunIds.length} selected runs · latest selection ${shortSha(latestSelectedRun)}`}
           />
-        )}
-      </Stack>
+        </Box>
+      )}
       <Chart
         option={option}
         height={430}

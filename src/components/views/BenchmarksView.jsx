@@ -175,7 +175,12 @@ export default function BenchmarksView({
       >
         {mode === 'aggregate' ? (
           <>
-            <Box sx={{ display: 'flex', justifyContent: { xs: 'flex-start', md: 'flex-end' }, mb: 1.5 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: { xs: 'flex-start', md: 'flex-end' }, gap: 0.75, mb: 1.5 }}>
+              <Typography variant="caption" color="text.secondary">
+                {data.runs.length} official attempts · Selected runs remain visible while zooming · {scrollZoomEnabled
+                  ? 'Scroll, pinch, or use the slider to change the visible range'
+                  : 'Use the slider to change the visible range'}
+              </Typography>
               {interactionControls}
             </Box>
             <AggregatePerformanceChart
@@ -206,8 +211,8 @@ export default function BenchmarksView({
             <FilterOverrideAlert benchmarks={outsideSingleFilter} available={catalog.available} onReturn={returnSingleToFilters} />
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75 }}>
               {showDetailsOnClick
-                ? 'Click a completed point to select its run and open details. Hover for duration and commit.'
-                : 'Click a completed point to select or clear its run. Hover for duration and commit.'}
+                ? 'Dotted segments bridge unavailable measurements. Click any result marker to select its run and open pass/failure details.'
+                : 'Dotted segments bridge unavailable measurements. Click any result marker to select or clear its run.'}
             </Typography>
             <BenchmarkHistoryChart
               data={data}
