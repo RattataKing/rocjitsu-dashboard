@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   Box,
+  ButtonBase,
   Paper,
   Stack,
   Table,
@@ -17,6 +18,7 @@ import { selectBenchmarkRecords } from '../../data/selectors';
 import { commitTimestampFor } from '../../data/runOrdering';
 import { formatDuration, formatFullDate, formatPercent, formatShortDate, shortSha } from '../../utils/formatters';
 import { changeTone, classifyDurationChange } from '../../utils/performance';
+import { detailActionStyles } from '../../theme/styles';
 import { hasDisplayValue } from '../../utils/values';
 import CommitComparison from '../shared/CommitComparison';
 
@@ -50,7 +52,7 @@ export default function HistoricalRecords({ data, filters, benchmark, onSelectRe
       <Box sx={{ p: 2.5 }}>
         <Typography variant="h2">Benchmark Run History</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4 }}>
-          Each change compares with the latest completed result for the same benchmark and target from the nearest earlier commit. Select a row for details.
+          Each change compares with the latest completed result for the same benchmark and target from the nearest earlier commit. Select a run time for details.
         </Typography>
       </Box>
       <TableContainer sx={{ maxHeight: 470, borderTop: 1, borderColor: 'divider' }}>
@@ -67,11 +69,17 @@ export default function HistoricalRecords({ data, filters, benchmark, onSelectRe
             {pageData.records.map((record) => (
               <TableRow
                 key={`${record.run.runId}:${record.test.testId}`}
-                hover
-                onClick={() => onSelectRecord(record)}
-                sx={{ cursor: 'pointer', '&:last-child td': { borderBottom: 0 } }}
+                sx={{ '&:last-child td': { borderBottom: 0 } }}
               >
-                <TableCell>{formatFullDate(record.run.timestamp)}</TableCell>
+                <TableCell>
+                  <ButtonBase
+                    aria-label={`Open result details for ${shortSha(record.run)} at ${formatFullDate(record.run.timestamp)}`}
+                    onClick={() => onSelectRecord(record)}
+                    sx={detailActionStyles}
+                  >
+                    <Typography variant="body2">{formatFullDate(record.run.timestamp)}</Typography>
+                  </ButtonBase>
+                </TableCell>
                 <TableCell>
                   <Stack direction="row" sx={{ minWidth: 0, alignItems: 'baseline', gap: 0.75 }}>
                     <Typography component="code" variant="caption" color="primary.main" sx={{ flexShrink: 0 }}>{shortSha(record.run)}</Typography>

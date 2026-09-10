@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   Box,
+  ButtonBase,
   InputAdornment,
   Paper,
   Stack,
@@ -19,6 +20,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import BenchmarkResultDialog from '../benchmarks/BenchmarkResultDialog';
 import StatusChip from '../shared/StatusChip';
 import { formatDuration, formatPercent, formatProblem } from '../../utils/formatters';
+import { detailActionStyles } from '../../theme/styles';
 import CommitComparison from '../shared/CommitComparison';
 
 const hiddenBelowLaptop = { display: { xs: 'none', lg: 'table-cell' } };
@@ -139,7 +141,7 @@ export default function ResultsTable({ results, run, baseline, repository, searc
         <Box>
           <Typography variant="h2">Latest Results</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4 }}>
-            Results from the Overview run · Select a row for details
+            Results from the Overview run · Select a benchmark name for details
           </Typography>
         </Box>
         <TextField
@@ -174,10 +176,18 @@ export default function ResultsTable({ results, run, baseline, repository, searc
           </TableHead>
           <TableBody>
             {rows.map((row) => (
-              <TableRow hover key={row.testId} onClick={() => setSelected(row)} sx={{ cursor: 'pointer', '&:last-child td': { borderBottom: 0 } }}>
+              <TableRow key={row.testId} sx={{ '&:last-child td': { borderBottom: 0 } }}>
                 <TableCell><Typography variant="body2" fontWeight={700} color="primary.main">{row.target}</Typography></TableCell>
                 <TableCell>{row.suite}</TableCell>
-                <TableCell><Typography variant="body2" fontWeight={650}>{row.name}</Typography></TableCell>
+                <TableCell>
+                  <ButtonBase
+                    aria-label={`Open ${row.name} result details for ${row.target}`}
+                    onClick={() => setSelected(row)}
+                    sx={detailActionStyles}
+                  >
+                    <Typography variant="body2" fontWeight={650}>{row.name}</Typography>
+                  </ButtonBase>
+                </TableCell>
                 <TableCell sx={hiddenBelowLaptop}>{row.problem?.dataType?.toUpperCase() ?? '—'}</TableCell>
                 <TableCell sx={hiddenBelowLaptop}>{formatProblem(row.problem)}</TableCell>
                 <TableCell align="right" sx={{ ...rightAlignedColumn, fontVariantNumeric: 'tabular-nums', fontWeight: 650 }}>{formatDuration(row.durationSeconds)}</TableCell>

@@ -11,7 +11,29 @@ npm run dev
 
 Run `npm run build` to create a static site in `dist/` and `npm run preview` to inspect that build locally.
 
-Use `npm run lint` for static checks and `npm run test:e2e` for desktop/mobile browser smoke tests.
+## Requirements and verification
+
+Use a Node version allowed by `engines` in `package.json`: Node 20.19+, 22.13+, or 24+. Browser
+tests additionally need Chromium, installed with `npm run test:e2e:install`.
+
+| Command | Purpose |
+| --- | --- |
+| `npm run lint` | ESLint over the whole package |
+| `npm run test:unit` | Vitest data, selector, and utility tests; no browser |
+| `npm run test:e2e:install` | Install Chromium and its system dependencies for browser tests |
+| `npm run test:e2e` | Playwright desktop behavior and mobile responsive smoke |
+| `npm run verify` | Lint, production build, and both test layers |
+
+Playwright rebuilds `dist/` as part of starting its own preview server, so every run exercises the
+current sources whether it is launched through `npm run test:e2e` or directly through
+`npx playwright test`. To iterate against a preview server you already have running, set
+`PLAYWRIGHT_REUSE_EXISTING_SERVER=1`; that opt-in is ignored when `CI` is set. Without it, a stray
+`vite preview` left on port 4173 makes Playwright stop with "already used" — kill that process or set
+the variable.
+
+This package owns no CI workflow. It is designed to live inside a larger repository, whose root
+automation should run the commands above with this directory as the working directory and with
+`package-lock.json` as its npm cache key.
 
 ## Data file contract
 
@@ -26,7 +48,13 @@ Benchmark facts live under `public/data/` as plain JSON:
 
 Vite copies the directory to `dist/data/` without bundling it. The application fetches, assembles, and validates the files at startup; no browser global is created. `src/data/dashboardData.js` owns file loading and snapshot preparation, while selectors derive chart series, regressions, completeness, and KPIs.
 
-An invalid, missing, or unreadable indexed run file is skipped without blocking valid history. A missing or invalid catalog also invalidates each referencing run. The dashboard displays a warning containing the skipped filename and validation reason. Invalid dataset-level `metadata.json` or `index.json`, or a dataset with no usable completed Vanilla runs, still produces the data-unavailable state because there is no safe dashboard snapshot to render.
+An invalid, missing, or unreadable indexed run file is skipped without blocking valid history. A missing or invalid catalog also invalidates each referencing run. The dashboard displays a warning containing the skipped filename and validation reason. Invalid dataset-level `metadata.json` or `index.json`, a dataset with no usable completed Vanilla runs, or two catalogs that define one test ID differently, still produce the data-unavailable state because there is no safe dashboard snapshot to render.
+
+## Loading at scale
+
+Startup issues one request per published run. The loader keeps eight requests in flight, preserves index order, reports determinate `loaded/total` progress, gives every request a 20-second timeout, and limits the whole attempt to 60 seconds. A timed-out or unreadable run becomes a skip warning, while a failed `metadata.json` or `index.json` or an expired load deadline is fatal and offers Retry. Leaving the page aborts the whole attempt instead of recording warnings. `metadata.json` and `index.json` are fetched with `cache: 'no-store'`, and immutable catalog and run URLs rely on the long-lived cache headers described in [DATA_CONTRACT.md](./DATA_CONTRACT.md).
+
+Parsing, validation, and memory are not the constraint at this scale: 500 synthetic runs parse in roughly 2 ms, validate in roughly 7 ms, and retain under 4 MB. Only move to a content-hashed snapshot file if real hosted p95 startup latency is unacceptable after bounded loading and cache headers are in place.
 
 Standard JSON has no comment syntax, so file responsibilities are documented here rather than embedded in the data files.
 

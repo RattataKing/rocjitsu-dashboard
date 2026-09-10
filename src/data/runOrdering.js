@@ -46,14 +46,18 @@ export function sortRunsByCommit(runs) {
   return [...runs].sort(compareRunsByCommit);
 }
 
-export function isOlderCommit(run, latestCommitRun) {
-  return Boolean(run && latestCommitRun && compareCommitPosition(run, latestCommitRun) < 0);
-}
-
-export function isBackfillRun(run, comparisonRuns) {
-  const references = Array.isArray(comparisonRuns) ? comparisonRuns : [comparisonRuns];
-  return references.some((reference) => (
-    isOlderCommit(run, reference)
-    && compareRunExecution(run, reference) > 0
-  ));
+// A backfill is any run executed after a run that tested a newer commit. Walking execution order
+// once and tracking the newest commit reached so far answers that for every run, instead of
+// comparing each run against the whole history.
+export function backfillRunIds(runs) {
+  const ids = new Set();
+  let newestCommitRun = null;
+  [...runs].sort(compareRunExecution).forEach((run) => {
+    if (newestCommitRun && compareCommitPosition(run, newestCommitRun) < 0) {
+      ids.add(run.runId);
+      return;
+    }
+    newestCommitRun = run;
+  });
+  return ids;
 }

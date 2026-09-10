@@ -12,7 +12,7 @@ import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import Chart from '../shared/Chart';
 import SectionCard from '../shared/SectionCard';
-import { formatDuration, formatFullDate, formatPercent } from '../../utils/formatters';
+import { escapeHtml, formatDuration, formatFullDate, formatPercent } from '../../utils/formatters';
 import { changeTone, classifyDurationChange } from '../../utils/performance';
 import { chartAreaGradient, chartLineStyle, chartPointStyle } from '../../utils/chartStyles';
 import CommitComparison from '../shared/CommitComparison';
@@ -58,17 +58,17 @@ export default function DurationHistory({ history, range, onRangeChange }) {
         const run = history.slots[usable[0].dataIndex]?.run;
         const timeDetails = history.mode === 'intraday'
           ? [
-            `<strong>Run time · ${formatFullDate(run.timestamp)}</strong>`,
-            `Commit time · ${formatFullDate(commitTimestampFor(run))}`,
+            `<strong>Run time · ${escapeHtml(formatFullDate(run.timestamp))}</strong>`,
+            `Commit time · ${escapeHtml(formatFullDate(commitTimestampFor(run)))}`,
           ]
           : [
-            `<strong>Commit time · ${formatFullDate(commitTimestampFor(run))}</strong>`,
-            `Run time · ${formatFullDate(run.timestamp)}`,
+            `<strong>Commit time · ${escapeHtml(formatFullDate(commitTimestampFor(run)))}</strong>`,
+            `Run time · ${escapeHtml(formatFullDate(run.timestamp))}`,
           ];
         return [
           ...timeDetails,
-          `Commit ${run.provenance?.rocjitsuCommitSha?.slice(0, 8) ?? 'unknown'}`,
-          ...usable.map((point) => `${point.marker}${point.seriesName}&nbsp;&nbsp;<strong>${formatDuration(point.value)}</strong>`),
+          `Commit ${escapeHtml(run.provenance?.rocjitsuCommitSha?.slice(0, 8) ?? 'unknown')}`,
+          ...usable.map((point) => `${point.marker}${escapeHtml(point.seriesName)}&nbsp;&nbsp;<strong>${formatDuration(point.value)}</strong>`),
         ].join('<br/>');
       },
     },

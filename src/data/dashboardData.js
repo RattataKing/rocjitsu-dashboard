@@ -1,4 +1,4 @@
-import { compareRunExecution, isRunCompleted, sortRunsByCommit } from './runOrdering';
+import { backfillRunIds, compareRunExecution, isRunCompleted, sortRunsByCommit } from './runOrdering';
 
 const CURRENT_SCHEMA_VERSION = 1;
 const RUN_FILE_PATTERN = /^runs\/[A-Za-z0-9._-]+\.json$/;
@@ -191,6 +191,14 @@ function normalizePublishedRun(run, catalog) {
   };
 }
 
+function testDefinitionIdentity(definition) {
+  return JSON.stringify([
+    definition.suite,
+    definition.name,
+    Object.entries(definition.problem ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+}
+
 function comparisonIdentity(run) {
   return JSON.stringify({
     testCatalog: run.testCatalog,
@@ -242,6 +250,21 @@ function buildDashboardData(raw) {
     throw new Error(`Run ${invalidRun.runId ?? '(unknown)'} is not a valid official develop run`);
   }
 
+  const commitTimestamps = new Map();
+  const inconsistentCommit = allRuns.find((run) => {
+    const sha = run.provenance.rocjitsuCommitSha;
+    const timestamp = Date.parse(run.commitTimestamp);
+    const existingTimestamp = commitTimestamps.get(sha);
+    if (existingTimestamp !== undefined && existingTimestamp !== timestamp) return true;
+    commitTimestamps.set(sha, timestamp);
+    return false;
+  });
+  if (inconsistentCommit) {
+    throw new Error(
+      `Commit ${inconsistentCommit.provenance.rocjitsuCommitSha} has conflicting committedAt values`,
+    );
+  }
+
   const pluginRuns = [...allRuns].sort(compareRunExecution);
   const runs = pluginRuns.filter((run) => run.plugin.id === 'vanilla');
   const latestCommitRun = sortRunsByCommit(runs).at(-1) ?? null;
@@ -256,6 +279,7 @@ function buildDashboardData(raw) {
     latestRun: runs.at(-1) ?? null,
     latestCommitRun,
     latestCompletedRun,
+    backfillRunIds: backfillRunIds(runs),
     targets,
     plugins,
     suites: [...new Set(raw.testCatalog.map((test) => test.suite))].sort(),
@@ -292,6 +316,7 @@ export function loadPublishedDashboardData({
   const warnings = [];
   const seenRunFiles = new Set();
   const seenRunIds = new Set();
+  const commitTimestamps = new Map();
   const comparisonGroups = new Map();
   const normalizedCatalogs = new Map();
 
@@ -319,6 +344,12 @@ export function loadPublishedDashboardData({
 
       const normalizedRun = normalizePublishedRun(publishedRun, catalog);
       if (seenRunIds.has(normalizedRun.runId)) throw new Error(`Duplicate run ID ${normalizedRun.runId}`);
+      const commitSha = normalizedRun.provenance.rocjitsuCommitSha;
+      const commitTimestamp = Date.parse(normalizedRun.commitTimestamp);
+      const existingCommitTimestamp = commitTimestamps.get(commitSha);
+      if (existingCommitTimestamp !== undefined && existingCommitTimestamp !== commitTimestamp) {
+        throw new Error(`Commit ${commitSha} has conflicting committedAt values`);
+      }
 
       const existingGroup = comparisonGroups.get(normalizedRun.comparisonId);
       if (existingGroup) {
@@ -337,6 +368,7 @@ export function loadPublishedDashboardData({
       }
 
       seenRunIds.add(normalizedRun.runId);
+      commitTimestamps.set(commitSha, commitTimestamp);
       normalizedRuns.push(normalizedRun);
       acceptedSourceRuns.push(publishedRun);
     } catch (runError) {
@@ -348,15 +380,26 @@ export function loadPublishedDashboardData({
   });
 
   const derivedCatalog = new Map();
+  const definitionSources = new Map();
   [...normalizedRuns]
     .sort(compareRunExecution)
     .forEach((run) => run.tests.forEach((test) => {
-      derivedCatalog.set(test.logicalTestId, {
+      const definition = {
         id: test.logicalTestId,
         suite: test.suite,
         name: test.name,
         problem: test.problem,
-      });
+      };
+      const identity = testDefinitionIdentity(definition);
+      const source = definitionSources.get(definition.id);
+      if (source && source.identity !== identity) {
+        throw new Error(
+          `Test ${definition.id} is defined differently by ${source.catalog} and ${run.testCatalog}; `
+          + 'publish a new test ID whenever the suite, name, or problem changes',
+        );
+      }
+      if (!source) definitionSources.set(definition.id, { identity, catalog: run.testCatalog });
+      derivedCatalog.set(definition.id, definition);
     }));
 
   const sourceData = {
@@ -379,45 +422,168 @@ export function loadPublishedDashboardData({
   return { data, sourceData, warnings };
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Unable to load dashboard data (${response.status} ${response.statusText})`);
+// A dataset of several hundred runs is one HTTP request per run. Browsers queue beyond their own
+// per-host limit anyway, and an unbounded fan-out makes every request share the same slow ramp, so
+// the loader keeps a fixed number of requests in flight and reports progress as they settle.
+export const MAX_CONCURRENT_RUN_REQUESTS = 8;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+export const DEFAULT_LOAD_TIMEOUT_MS = 60_000;
+
+const loadCancellation = Symbol('dashboard-load-cancellation');
+
+class LoadCancelledError extends Error {
+  constructor() {
+    super('Dashboard data loading was cancelled');
+    this.name = 'AbortError';
+    this[loadCancellation] = true;
   }
-  return response.json();
 }
 
-export async function loadDashboardDataFiles({ metadataUrl, indexUrl, onManifest }) {
+export function isLoadCancelled(error) {
+  return error?.[loadCancellation] === true;
+}
+
+function throwIfCancelled(signal) {
+  if (signal?.aborted) throw new LoadCancelledError();
+}
+
+async function fetchJsonResource(url, {
+  fetchImpl,
+  signal,
+  timeoutMs,
+  cache,
+  resourceType,
+}) {
+  throwIfCancelled(signal);
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort();
+  signal?.addEventListener('abort', forwardAbort, { once: true });
+  let timedOut = false;
+  const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs)
+    : null;
+
+  try {
+    const response = await fetchImpl(String(url), {
+      signal: controller.signal,
+      ...(cache ? { cache } : {}),
+    });
+    if (!response.ok) {
+      throw new Error(`Unable to load ${resourceType} ${url} (${response.status} ${response.statusText})`);
+    }
+    try {
+      return await response.json();
+    } catch (parseError) {
+      throw new Error(`Unable to parse ${resourceType} ${url} as JSON: ${parseError.message}`, { cause: parseError });
+    }
+  } catch (error) {
+    if (signal?.aborted) throw new LoadCancelledError();
+    if (timedOut) throw new Error(`Timed out after ${timeoutMs} ms loading ${resourceType} ${url}`, { cause: error });
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener('abort', forwardAbort);
+  }
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }));
+  return results;
+}
+
+export async function loadDashboardDataFiles({
+  metadataUrl,
+  indexUrl,
+  onManifest,
+  onProgress,
+  signal,
+  fetch: fetchImpl = globalThis.fetch.bind(globalThis),
+  concurrency = MAX_CONCURRENT_RUN_REQUESTS,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  loadTimeoutMs = DEFAULT_LOAD_TIMEOUT_MS,
+}) {
+  const loadController = new AbortController();
+  const forwardAbort = () => loadController.abort();
+  if (signal?.aborted) forwardAbort();
+  else signal?.addEventListener('abort', forwardAbort, { once: true });
+  let loadTimedOut = false;
+  const loadTimer = Number.isFinite(loadTimeoutMs) && loadTimeoutMs > 0
+    ? setTimeout(() => {
+      loadTimedOut = true;
+      loadController.abort();
+    }, loadTimeoutMs)
+    : null;
+
+  try {
+  // metadata.json and index.json are the only mutable documents in the contract, so they must
+  // revalidate on every load while immutable runs and catalogs use ordinary HTTP caching.
+  const loadSignal = loadController.signal;
+  const mutableRequest = { fetchImpl, signal: loadSignal, timeoutMs: requestTimeoutMs, cache: 'no-store' };
+  const immutableRequest = { fetchImpl, signal: loadSignal, timeoutMs: requestTimeoutMs };
   const [metadata, index] = await Promise.all([
-    fetchJson(metadataUrl),
-    fetchJson(indexUrl),
+    fetchJsonResource(metadataUrl, { ...mutableRequest, resourceType: 'dashboard metadata' }),
+    fetchJsonResource(indexUrl, { ...mutableRequest, resourceType: 'dashboard data index' }),
   ]);
   if (!index || !Array.isArray(index.runFiles)) {
     throw new Error('Expected the dashboard data index to contain a runFiles array');
   }
   onManifest?.({ ...metadata, generatedAt: index.generatedAt });
 
-  const runResults = await Promise.all(index.runFiles.map(async (runFile) => {
+  const total = index.runFiles.length;
+  let loaded = 0;
+  onProgress?.({ loaded, total });
+
+  const runResults = await mapWithConcurrency(index.runFiles, concurrency, async (runFile) => {
+    const settle = (result) => {
+      loaded += 1;
+      onProgress?.({ loaded, total });
+      return result;
+    };
     if (typeof runFile !== 'string' || !RUN_FILE_PATTERN.test(runFile)) {
-      return { run: null, error: new Error(`Invalid run filename: ${String(runFile)}`) };
+      return settle({ run: null, error: new Error(`Invalid run filename: ${String(runFile)}`) });
     }
     try {
-      return { run: await fetchJson(new URL(runFile, indexUrl)), error: null };
+      const run = await fetchJsonResource(new URL(runFile, indexUrl), {
+        ...immutableRequest,
+        resourceType: 'run file',
+      });
+      return settle({ run, error: null });
     } catch (error) {
-      return { run: null, error };
+      // Cancellation is a caller decision about the whole load, never one skippable run.
+      if (isLoadCancelled(error)) throw error;
+      return settle({ run: null, error });
     }
-  }));
+  });
 
   const catalogPaths = [...new Set(runResults
     .map((result) => result.run?.testCatalog)
     .filter((catalogPath) => hasText(catalogPath) && CATALOG_FILE_PATTERN.test(catalogPath)))];
-  const catalogResults = await Promise.all(catalogPaths.map(async (catalogPath) => {
+  const catalogResults = await mapWithConcurrency(catalogPaths, concurrency, async (catalogPath) => {
     try {
-      return { catalogPath, catalog: await fetchJson(new URL(catalogPath, indexUrl)), error: null };
+      const catalog = await fetchJsonResource(new URL(catalogPath, indexUrl), {
+        ...immutableRequest,
+        resourceType: 'test catalog',
+      });
+      return { catalogPath, catalog, error: null };
     } catch (error) {
+      if (isLoadCancelled(error)) throw error;
       return { catalogPath, catalog: null, error };
     }
-  }));
+  });
+
+  throwIfCancelled(loadSignal);
 
   return loadPublishedDashboardData({
     metadata,
@@ -429,4 +595,14 @@ export async function loadDashboardDataFiles({ metadataUrl, indexUrl, onManifest
       .filter((result) => result.error)
       .map((result) => [result.catalogPath, result.error])),
   });
+  } catch (error) {
+    if (signal?.aborted) throw new LoadCancelledError();
+    if (loadTimedOut && isLoadCancelled(error)) {
+      throw new Error(`Timed out after ${loadTimeoutMs} ms loading dashboard data`, { cause: error });
+    }
+    throw error;
+  } finally {
+    if (loadTimer) clearTimeout(loadTimer);
+    signal?.removeEventListener('abort', forwardAbort);
+  }
 }

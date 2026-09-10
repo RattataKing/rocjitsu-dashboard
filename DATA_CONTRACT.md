@@ -15,6 +15,17 @@ All files are copied to the built site without bundling. They must be valid JSON
 
 Upload a new catalog before any run that references it. Upload run files before publishing the updated index. Existing catalogs and runs are immutable.
 
+## Hosting requirements
+
+The dashboard loads one HTTP request per published run, so the host must serve `data/` with cache headers that match each file's mutability.
+
+| URL | Required behavior |
+| --- | --- |
+| `data/metadata.json`, `data/index.json` | Must revalidate on every load, for example `Cache-Control: no-cache`. The browser also requests them with `cache: 'no-store'`. |
+| `data/test-catalogs/*.json`, `data/runs/*.json` | Immutable once published; serve a long-lived `Cache-Control: public, max-age=31536000, immutable` so repeat visits refetch only new runs. |
+
+Publishing a mutated catalog or run under an existing filename is a contract violation: cached clients would keep the old body indefinitely. Publish a new ID instead.
+
 ## `metadata.json`
 
 ```json
@@ -102,12 +113,14 @@ The dashboard renders every `problem` entry under **Problem Details**.
 
 - Never edit a published catalog.
 - Add or remove tests by publishing a new catalog ID.
-- Retain the same test ID when the workload is unchanged.
-- Use a new test ID when the operation or problem changes materially.
+- Retain the same test ID only when `suite`, `name`, and `problem` are all unchanged.
+- Use a new test ID for any other edit, including display-only changes to `suite` or `name`.
 - Catalog versions may share any number of unchanged tests.
 - Runs referencing a five-test catalog remain 5/5 after a seven-test catalog is introduced.
 
 The browser derives the dashboard-wide picker from the union of referenced catalogs. No separate mutable current catalog exists.
+
+Because that union is keyed by test ID, a shared test ID must carry an identical `suite`, `name`, and `problem` in every catalog that defines it. There is no authoritative winner when two catalogs disagree, so the dashboard rejects the whole dataset and names both catalogs rather than silently comparing different workloads. Renaming a published test therefore costs its history continuity; that price buys the guarantee that one test ID always means one workload.
 
 ## Run file
 
@@ -245,21 +258,6 @@ speedup             = baseline duration / plugin duration
 ```
 
 The overall runtime overhead is the geometric mean of per-test duration ratios. When every selected test is comparable, the value is exact. When only some tests pass for both the plugin and baseline, the dashboard measures the geometric-mean overhead from those passed pairs and assumes the same overhead for the entire selected test set. This whole-set estimate is marked with `*` and reports how many passed pairs contributed. Failed, timed-out, missing, and baseline-incomplete results contribute no measured ratio; they receive the passed-pair overhead assumption. No estimate is shown when no passed pair exists.
-
-## Version 4 to version 5 mapping
-
-| Version 4 | Version 5 |
-| --- | --- |
-| One file per `(id, execution.rocjitsuTarget)` | One file per plugin execution containing all targets |
-| Test definitions repeated under `tests[]` | Immutable shared `testCatalog` |
-| Nested `tests[].result` | Target-grouped `targets[].results[]` |
-| `tests[].id` | Catalog test ID referenced by `results[].testId` |
-| `execution.rocjitsuTarget` | `targets[].id` |
-| Optional `execution.machine` | Required shared `execution.machine` |
-| No plugin identity | Required top-level `plugin` |
-| Same `id` merged across target files | Unique run `id`; `comparisonId` groups plugin variants |
-
-Version 5 is the only published format accepted by the loader.
 
 ## Publishing checklist
 

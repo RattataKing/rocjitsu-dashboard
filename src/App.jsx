@@ -3,6 +3,7 @@ import {
   Alert,
   Badge,
   Box,
+  Button,
   Chip,
   Container,
   CssBaseline,
@@ -23,34 +24,49 @@ import BenchmarksView from './components/views/BenchmarksView';
 import CompareRunsView from './components/views/CompareRunsView';
 import FailuresView from './components/views/FailuresView';
 import PluginComparisonView from './components/views/PluginComparisonView';
-import { loadDashboardDataFiles } from './data/dashboardData';
+import { isLoadCancelled, loadDashboardDataFiles } from './data/dashboardData';
 import { selectFailures, selectOverview } from './data/selectors';
 import { useDashboardState } from './hooks/useDashboardState';
+import { visuallyHiddenStyles } from './theme/styles';
 import { createDashboardTheme } from './theme/theme';
 import { formatFullDate, shortSha } from './utils/formatters';
 
 const dataMetadataUrl = new URL(`${import.meta.env.BASE_URL}data/metadata.json`, document.baseURI).href;
 const dataIndexUrl = new URL(`${import.meta.env.BASE_URL}data/index.json`, document.baseURI).href;
 
-function LoadingDataState() {
+function LoadingDataState({ progress }) {
+  const determinate = progress.total > 0;
   return (
     <Box component="main" sx={{ minHeight: 'calc(100vh - 76px)' }}>
       <Container maxWidth={false} sx={{ maxWidth: 1600, px: { xs: 2, sm: 3, xl: 4 }, pt: { xs: 2.5, md: 3.5 }, pb: 6 }}>
         <DashboardHero />
         <Paper
           data-testid="dashboard-data-loading"
-          role="status"
-          aria-live="polite"
           aria-busy="true"
           variant="outlined"
           sx={{ overflow: 'hidden', borderRadius: 3 }}
         >
-          <LinearProgress aria-label="Loading benchmark run data" />
+          <Typography role="status" aria-live="polite" sx={visuallyHiddenStyles}>
+            Loading benchmark run data
+          </Typography>
+          <LinearProgress
+            aria-label="Loading benchmark run data"
+            aria-valuetext={determinate
+              ? `${progress.loaded} of ${progress.total} run files loaded`
+              : 'Loading benchmark run data'}
+            variant={determinate ? 'determinate' : 'indeterminate'}
+            {...(determinate ? { value: (progress.loaded / progress.total) * 100 } : {})}
+          />
           <Box sx={{ p: { xs: 2, sm: 2.5 } }}>
             <Typography fontWeight={700}>Loading benchmark run data…</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4 }}>
               The dashboard shell is ready while run files are fetched and validated.
             </Typography>
+            {determinate && (
+              <Typography data-testid="dashboard-load-progress" variant="body2" color="text.secondary" sx={{ mt: 0.4 }}>
+                {progress.loaded} of {progress.total} run files loaded
+              </Typography>
+            )}
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mt: 2.25 }}>
               <Skeleton variant="rounded" animation="wave" height={54} sx={{ flex: 1 }} />
               <Skeleton variant="rounded" animation="wave" height={54} sx={{ flex: 1 }} />
@@ -68,10 +84,15 @@ function LoadingDataState() {
   );
 }
 
-function EmptyDataState({ error }) {
+function EmptyDataState({ error, onRetry }) {
   return (
     <Container maxWidth="md" sx={{ py: 8 }}>
-      <Alert severity="error" variant="outlined">
+      <Alert
+        data-testid="dashboard-data-error"
+        severity="error"
+        variant="outlined"
+        action={<Button color="inherit" size="small" onClick={onRetry}>Retry</Button>}
+      >
         <Typography fontWeight={700}>Dashboard data unavailable</Typography>
         <Typography variant="body2" sx={{ mt: 0.5 }}>{error?.message}</Typography>
         <Typography variant="body2" sx={{ mt: 1 }}>Check the metadata, data index, and per-run test catalogs under <code>public/data/</code>.</Typography>
@@ -111,9 +132,10 @@ function DashboardHero({ data = null }) {
 
 function Dashboard({ data, dataWarnings = [] }) {
   const state = useDashboardState(data);
+  // Overview derives the whole history, so it stays uncomputed while another tab owns the view.
   const overview = useMemo(
-    () => selectOverview(data, state.filters, state.historyRange),
-    [data, state.filters, state.historyRange],
+    () => (state.tab === 'overview' ? selectOverview(data, state.filters, state.historyRange) : null),
+    [data, state.filters, state.historyRange, state.tab],
   );
   const failureCount = useMemo(() => selectFailures(data, state.filters).length, [data, state.filters]);
   const openRunComparison = (runIds) => {
@@ -234,27 +256,30 @@ export default function App() {
     ?? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   const [mode, setMode] = useState(preferredMode);
   const [dataState, setDataState] = useState({ data: null, manifest: null, sourceData: null, warnings: [], error: null });
+  // Progress is tagged with the attempt that produced it so a retry starts from zero without an
+  // extra state reset.
+  const [progress, setProgress] = useState({ attempt: 0, loaded: 0, total: 0 });
+  const [attempt, setAttempt] = useState(0);
   const theme = useMemo(() => createDashboardTheme(mode), [mode]);
 
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     loadDashboardDataFiles({
       metadataUrl: dataMetadataUrl,
       indexUrl: dataIndexUrl,
-      onManifest: (manifest) => {
-        if (active) setDataState((current) => ({ ...current, manifest }));
-      },
+      signal: controller.signal,
+      onManifest: (manifest) => setDataState((current) => ({ ...current, manifest })),
+      onProgress: ({ loaded, total }) => setProgress({ attempt, loaded, total }),
     })
       .then(({ data, sourceData, warnings }) => {
-        if (active) setDataState({ data, manifest: data, sourceData, warnings, error: null });
+        setDataState({ data, manifest: data, sourceData, warnings, error: null });
       })
       .catch((error) => {
-        if (active) setDataState((current) => ({ ...current, data: null, sourceData: null, warnings: [], error }));
+        if (isLoadCancelled(error)) return;
+        setDataState((current) => ({ ...current, data: null, sourceData: null, warnings: [], error }));
       });
-    return () => {
-      active = false;
-    };
-  }, []);
+    return () => controller.abort();
+  }, [attempt]);
 
   const toggleMode = () => {
     setMode((current) => {
@@ -274,8 +299,18 @@ export default function App() {
         mode={mode}
         onToggleMode={toggleMode}
       />
-      {!dataState.data && !dataState.error && <LoadingDataState />}
-      {dataState.error && <EmptyDataState error={dataState.error} />}
+      {!dataState.data && !dataState.error && (
+        <LoadingDataState progress={progress.attempt === attempt ? progress : { loaded: 0, total: 0 }} />
+      )}
+      {dataState.error && (
+        <EmptyDataState
+          error={dataState.error}
+          onRetry={() => {
+            setDataState((current) => ({ ...current, error: null }));
+            setAttempt((current) => current + 1);
+          }}
+        />
+      )}
       {dataState.data && <Dashboard data={dataState.data} dataWarnings={dataState.warnings} />}
     </ThemeProvider>
   );

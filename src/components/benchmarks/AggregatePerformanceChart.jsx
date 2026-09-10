@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { Box, Chip, useTheme } from '@mui/material';
 import Chart from '../shared/Chart';
+import ChartPointSelector from './ChartPointSelector';
 import { selectAggregateRunSeries } from '../../data/selectors';
 import { commitTimestampFor } from '../../data/runOrdering';
-import { formatDuration, formatFullDate, shortSha } from '../../utils/formatters';
+import { escapeHtml, formatDuration, formatFullDate, shortSha } from '../../utils/formatters';
 import { chartAreaGradient, chartLineStyle, chartPointStyle } from '../../utils/chartStyles';
 import { chartGapPresentation } from '../../utils/chartGaps';
 import {
@@ -20,6 +21,7 @@ export default function AggregatePerformanceChart({
   filters,
   selectedRunIds,
   onSelectRun,
+  onOpenRun,
   showDetailsOnClick = false,
   scrollZoomEnabled = true,
 }) {
@@ -151,17 +153,17 @@ export default function AggregatePerformanceChart({
           parameter.seriesName === 'Incomplete aggregate results' && parameter.data?.incomplete
         ));
         return [
-          `<strong>Commit ${shortSha(run)}</strong>`,
-          `Commit time · ${formatFullDate(commitTimestampFor(run))}`,
-          `Execution time · ${formatFullDate(run.timestamp)}`,
+          `<strong>Commit ${escapeHtml(shortSha(run))}</strong>`,
+          `Commit time · ${escapeHtml(formatFullDate(commitTimestampFor(run)))}`,
+          `Execution time · ${escapeHtml(formatFullDate(run.timestamp))}`,
           `Run type · ${run.trigger === 'manual' ? 'Manual' : 'Auto'}`,
           ...usable.map((targetPoint) => (
-            `${targetPoint.marker}${targetPoint.seriesName}&nbsp;&nbsp;<strong>${formatDuration(targetPoint.data.value)}</strong>`
+            `${targetPoint.marker}${escapeHtml(targetPoint.seriesName)}&nbsp;&nbsp;<strong>${formatDuration(targetPoint.data.value)}</strong>`
           )),
           incomplete
-            ? `${incomplete.marker}${incomplete.data.target}&nbsp;&nbsp;<strong>${incomplete.data.completed}/${incomplete.data.total} completed</strong>`
+            ? `${incomplete.marker}${escapeHtml(incomplete.data.target)}&nbsp;&nbsp;<strong>${incomplete.data.completed}/${incomplete.data.total} completed</strong>`
             : null,
-          unavailable?.length ? `Unavailable targets · ${unavailable.join(', ')}` : null,
+          unavailable?.length ? `Unavailable targets · ${escapeHtml(unavailable.join(', '))}` : null,
           `Selected results · ${selectedTests.filter((test) => test.status === 'completed').length}/${totalTestCount} completed`,
         ].filter(Boolean).join('<br/>');
       },
@@ -283,6 +285,11 @@ export default function AggregatePerformanceChart({
       },
     ],
   };
+  const runOptions = useMemo(() => [...viewModel.runs].reverse().map((run) => ({
+    id: run.runId,
+    label: `${shortSha(run)} · ${formatFullDate(run.timestamp)}`,
+    run,
+  })), [viewModel.runs]);
   const chartEvents = useMemo(() => ({
     click: (parameters) => {
       if (parameters.componentType === 'series' && parameters.data?.run) {
@@ -321,7 +328,16 @@ export default function AggregatePerformanceChart({
         option={option}
         height={430}
         ariaLabel="Aggregate duration history for all runs"
+        ariaDescribedBy="aggregate-chart-keyboard-help"
         onEvents={chartEvents}
+      />
+      <ChartPointSelector
+        label="Aggregate run"
+        actionLabel="Open run details"
+        description="Every point in this chart can also be reached with the Aggregate run control below it."
+        descriptionId="aggregate-chart-keyboard-help"
+        options={runOptions}
+        onActivate={(choice) => onOpenRun(choice.run)}
       />
     </Box>
   );

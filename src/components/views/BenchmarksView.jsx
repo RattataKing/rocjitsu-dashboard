@@ -98,6 +98,15 @@ export default function BenchmarksView({
     onSelectRun(run.runId);
     if (showDetailsOnClick) setSelectedRunDetails(run);
   };
+  // Explicit "open" actions always show details; the click toggle governs chart clicks only.
+  const openGraphPoint = (record) => {
+    onSelectRun(record.run.runId);
+    setSelectedRecord(record);
+  };
+  const openAggregatePoint = (run) => {
+    onSelectRun(run.runId);
+    setSelectedRunDetails(run);
+  };
 
   const returnSingleToFilters = () => {
     if (catalog.available.length === 0) return;
@@ -188,6 +197,7 @@ export default function BenchmarksView({
               filters={filters}
               selectedRunIds={selectedRunIds}
               onSelectRun={selectAggregatePoint}
+              onOpenRun={openAggregatePoint}
               showDetailsOnClick={showDetailsOnClick}
               scrollZoomEnabled={scrollZoomEnabled}
             />
@@ -220,8 +230,10 @@ export default function BenchmarksView({
               benchmark={selectedTest}
               selectedRunIds={selectedRunIds}
               onSelectRecord={selectGraphPoint}
+              onOpenRecord={openGraphPoint}
               onSelectRun={onSelectRun}
               showDetailsOnClick={showDetailsOnClick}
+              showPointSelector
               scrollZoomEnabled={scrollZoomEnabled}
             />
           </>
@@ -271,8 +283,10 @@ export default function BenchmarksView({
                       height={290}
                       selectedRunIds={selectedRunIds}
                       onSelectRecord={selectGraphPoint}
+                      onOpenRecord={openGraphPoint}
                       onSelectRun={onSelectRun}
                       showDetailsOnClick={showDetailsOnClick}
+                      showPointSelector
                       scrollZoomEnabled={scrollZoomEnabled}
                     />
                   </Paper>
@@ -294,7 +308,7 @@ export default function BenchmarksView({
           data={data}
           filters={filters}
           benchmark={selectedTest}
-          onSelectRecord={setSelectedRecord}
+          onSelectRecord={openGraphPoint}
         />
       )}
 

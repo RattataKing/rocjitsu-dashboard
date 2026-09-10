@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useMediaQuery, useTheme } from '@mui/material';
 import Chart from '../shared/Chart';
+import ChartPointSelector from './ChartPointSelector';
 import { selectBenchmarkSeries } from '../../data/selectors';
 import { commitTimestampFor } from '../../data/runOrdering';
-import { formatDuration, formatFullDate, shortSha } from '../../utils/formatters';
+import { escapeHtml, formatDuration, formatFullDate, shortSha } from '../../utils/formatters';
 import { chartAreaGradient, chartLineStyle, chartPointStyle } from '../../utils/chartStyles';
 import { chartGapPresentation } from '../../utils/chartGaps';
 import { durationAxisBounds } from '../../utils/durationAxis';
@@ -18,8 +19,10 @@ export default function BenchmarkHistoryChart({
   height = 370,
   selectedRunIds = [],
   onSelectRecord,
+  onOpenRecord,
   onSelectRun,
   showDetailsOnClick = false,
+  showPointSelector = false,
   scrollZoomEnabled = true,
 }) {
   const theme = useTheme();
@@ -122,11 +125,11 @@ export default function BenchmarkHistoryChart({
         if (points.length === 0) return 'No result for this benchmark';
         const run = points[0].data.record.run;
         return [
-          `<strong>Run time · ${formatFullDate(run.timestamp)}</strong>`,
-          `Commit ${shortSha(run)} · ${formatFullDate(commitTimestampFor(run))}`,
+          `<strong>Run time · ${escapeHtml(formatFullDate(run.timestamp))}</strong>`,
+          `Commit ${escapeHtml(shortSha(run))} · ${escapeHtml(formatFullDate(commitTimestampFor(run)))}`,
           ...points.map((point) => {
             const { test } = point.data.record;
-            const target = point.data.target ?? point.seriesName;
+            const target = escapeHtml(point.data.target ?? point.seriesName);
             return test.status === 'completed'
               ? `${point.marker}${target}&nbsp;&nbsp;<strong>${formatDuration(test.durationSeconds)}</strong> · Completed`
               : `${point.marker}${target}&nbsp;&nbsp;<strong>${test.status === 'failed' ? 'Failed' : 'Timeout'}</strong>`;
@@ -233,6 +236,17 @@ export default function BenchmarkHistoryChart({
       z: 12,
     }] : []),
   };
+  const recordOptions = useMemo(() => (showPointSelector ? viewModel.series
+    .flatMap((series) => series.records.map((record, index) => ({ record, index })))
+    .filter(({ record }) => record)
+    .sort((left, right) => right.index - left.index)
+    .map(({ record }) => ({
+      id: `${record.test.target}:${record.run.runId}`,
+      label: `${record.test.target} · ${shortSha(record.run)} · ${record.test.status === 'completed'
+        ? formatDuration(record.test.durationSeconds)
+        : record.test.status}`,
+      record,
+    })) : []), [showPointSelector, viewModel.series]);
   const chartEvents = useMemo(() => ({
     click: (parameters) => {
       if (parameters.componentType === 'series' && parameters.data?.record) {
@@ -260,12 +274,27 @@ export default function BenchmarkHistoryChart({
     },
   }), [onSelectRecord, onSelectRun, selectedIndexes, viewModel.runs.length]);
 
+  const keyboardHelpId = `benchmark-chart-keyboard-help-${benchmark.id}`;
+
   return (
-    <Chart
-      option={option}
-      height={height}
-      ariaLabel={`${benchmark.name} duration history`}
-      onEvents={chartEvents}
-    />
+    <>
+      <Chart
+        option={option}
+        height={height}
+        ariaLabel={`${benchmark.name} duration history`}
+        ariaDescribedBy={showPointSelector ? keyboardHelpId : undefined}
+        onEvents={chartEvents}
+      />
+      {showPointSelector && (
+        <ChartPointSelector
+          label={`${benchmark.name} result`}
+          actionLabel={`Open ${benchmark.name} result`}
+          description={`Every point in this chart can also be reached with the ${benchmark.name} result control below it.`}
+          descriptionId={keyboardHelpId}
+          options={recordOptions}
+          onActivate={(choice) => onOpenRecord(choice.record)}
+        />
+      )}
+    </>
   );
 }

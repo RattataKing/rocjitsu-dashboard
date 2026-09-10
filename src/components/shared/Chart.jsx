@@ -25,7 +25,7 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-export default function Chart({ option, height = 280, ariaLabel, onEvents }) {
+export default function Chart({ option, height = 280, ariaLabel, ariaDescribedBy, onEvents }) {
   const theme = useTheme();
   const tooltip = option.tooltip ? {
     backgroundColor: theme.palette.background.paper,
@@ -63,6 +63,7 @@ export default function Chart({ option, height = 280, ariaLabel, onEvents }) {
       opts={{ renderer: 'canvas' }}
       style={{ width: '100%', height }}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       role="img"
     />
   );

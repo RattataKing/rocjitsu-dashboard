@@ -32,7 +32,14 @@ import {
   selectPluginComparison,
   selectPluginComparisonGroups,
 } from '../../data/pluginComparison';
-import { formatDuration, formatFullDate, formatPercent, shortSha } from '../../utils/formatters';
+import {
+  escapeHtml,
+  formatDuration,
+  formatFullDate,
+  formatPercent,
+  shortSha,
+} from '../../utils/formatters';
+import { detailActionStyles } from '../../theme/styles';
 
 const PLUGIN_COLORS = {
   vanilla: '#16A34A',
@@ -146,7 +153,7 @@ function ResultCell({ value, baseline, onOpen }) {
     <ButtonBase
       onClick={() => onOpen({ run: value.run, test: value.result })}
       aria-label={`Open ${value.run.plugin.name} result for ${value.result.name}`}
-      sx={{ width: '100%', justifyContent: 'flex-start', borderRadius: 1, textAlign: 'left', py: 0.35 }}
+      sx={{ ...detailActionStyles, width: '100%' }}
     >
       <Box>
         {value.result.status === 'completed' ? (
@@ -185,8 +192,8 @@ function TargetComparison({ group, target, suites, baselinePluginId, onOpen }) {
     tooltip: {
       trigger: 'item',
       formatter: ({ data: point }) => point?.value == null ? '' : [
-        `<strong>${point.test.name}</strong>`,
-        `${point.run.plugin.name} on ${target}`,
+        `<strong>${escapeHtml(point.test.name)}</strong>`,
+        `${escapeHtml(point.run.plugin.name)} on ${escapeHtml(target)}`,
         `Duration ${formatDuration(point.result.durationSeconds)}`,
         `Runtime overhead ${formatPercent(point.delta)}`,
       ].join('<br/>'),
@@ -347,8 +354,12 @@ function TargetComparison({ group, target, suites, baselinePluginId, onOpen }) {
               option={chartOption}
               height={Math.min(650, Math.max(340, viewModel.rows.length * comparisonRuns.length * 24 + 120))}
               ariaLabel={`Plugin runtime overhead for ${target}`}
+              ariaDescribedBy={`plugin-chart-help-${target}`}
               onEvents={{ click: ({ data: point }) => point?.result && onOpen({ run: point.run, test: point.result }) }}
             />
+            <Typography id={`plugin-chart-help-${target}`} variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+              Every point in this chart is also available as a keyboard-operable button in the Test-by-Plugin Results table below.
+            </Typography>
             {viewModel.summaries.some((summary) => summary.estimated) && (
               <Alert severity="warning" variant="outlined" sx={{ mt: 1 }}>
                 * Estimated for the full selected set: the geometric-mean overhead measured from passed plugin/baseline pairs is assumed for failed, timed-out, missing, or baseline-incomplete results.

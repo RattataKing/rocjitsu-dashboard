@@ -4,7 +4,6 @@ import {
   commitTimestampFor,
   compareCommitPosition,
   compareRunsByCommit,
-  isBackfillRun,
   isRunCompleted,
   sameComparisonScope,
   sortRunsByCommit,
@@ -193,7 +192,7 @@ export function selectOverview(data, filters, range = 'ALL') {
   const completedRuns = data.runs.filter(isRunCompleted);
   const candidate = data.latestCommitRun ?? sortRunsByCommit(data.runs).at(-1) ?? data.latestRun;
   const officialRuns = completedRuns.filter((run) => sameComparisonScope(run, candidate));
-  const trendRuns = officialRuns.filter((run) => !isBackfillRun(run, data.runs));
+  const trendRuns = officialRuns.filter((run) => !data.backfillRunIds.has(run.runId));
   const baseline = previousCompletedRun(data.runs, candidate);
   const comparisons = compareRuns(candidate, baseline, filters);
   const latestTests = (candidate?.tests ?? []).filter((test) => testMatches(test, filters));
@@ -344,7 +343,7 @@ export function selectRecentRuns(data, filters, limit = 8) {
       ...summary,
       latest: index === 0,
       latestCommit: compareCommitPosition(run, data.latestCommitRun) === 0,
-      olderCommit: isBackfillRun(run, data.runs),
+      olderCommit: data.backfillRunIds.has(run.runId),
       durationDelta: summary.completed === summary.total && baselineDuration
         ? ((candidateDuration - baselineDuration) / baselineDuration) * 100
         : null,

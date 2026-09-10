@@ -16,7 +16,7 @@ import RunSelector from '../compare/RunSelector';
 import Chart from '../shared/Chart';
 import SectionCard from '../shared/SectionCard';
 import { previousCompletedRun, selectRunComparison } from '../../data/selectors';
-import { formatDuration, formatPercent, shortSha } from '../../utils/formatters';
+import { escapeHtml, formatDuration, formatPercent, shortSha } from '../../utils/formatters';
 import { changeTone, classifyDurationChange } from '../../utils/performance';
 import CommitComparison from '../shared/CommitComparison';
 
@@ -107,12 +107,12 @@ export default function CompareRunsView({
       borderColor: theme.palette.divider,
       textStyle: { color: theme.palette.text.primary },
       formatter: ({ data: point }) => [
-        `<strong>${point.comparison.test.name}</strong>`,
-        `${point.comparison.test.target} · ${point.comparison.test.suite}`,
+        `<strong>${escapeHtml(point.comparison.test.name)}</strong>`,
+        `${escapeHtml(point.comparison.test.target)} · ${escapeHtml(point.comparison.test.suite)}`,
         `Candidate ${formatDuration(point.comparison.test.durationSeconds)}`,
         `Baseline ${formatDuration(point.comparison.previous.durationSeconds)}`,
         `Change ${formatPercent(point.comparison.delta)}`,
-        `Commits ${shortSha(candidate)} vs ${shortSha(baseline)}`,
+        `Commits ${escapeHtml(shortSha(candidate))} vs ${escapeHtml(shortSha(baseline))}`,
       ].join('<br/>'),
     },
     grid: compactChart

@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import Chart from '../shared/Chart';
 import SectionCard from '../shared/SectionCard';
-import { formatFullDate, formatShortDate, shortSha } from '../../utils/formatters';
+import { escapeHtml, formatFullDate, formatShortDate, shortSha } from '../../utils/formatters';
 import { chartAreaGradient, chartLineStyle, chartPointStyle } from '../../utils/chartStyles';
 
 function SummaryStat({ label, value }) {
@@ -36,8 +36,8 @@ export default function RunReliability({ reliability }) {
         const row = reliability.rows[points[0]?.dataIndex];
         if (!row) return '';
         return [
-          `<strong>${formatFullDate(row.run.timestamp)}</strong>`,
-          `Commit ${shortSha(row.run)}`,
+          `<strong>${escapeHtml(formatFullDate(row.run.timestamp))}</strong>`,
+          `Commit ${escapeHtml(shortSha(row.run))}`,
           `Coverage ${row.completed}/${row.total} (${Number.isFinite(row.completionPercent) ? `${row.completionPercent.toFixed(1)}%` : 'unavailable'})`,
           `Failed ${row.failed} · timed out ${row.timeout}`,
         ].join('<br/>');
